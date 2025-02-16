@@ -26,8 +26,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./result
-          asset_name: plundrio-x86_64-linux
+          asset_path: ./result/bin/plundrio
+          asset_name: plundrio_${{ github.event.release.tag_name }}.x86_64-linux
           asset_content_type: application/octet-stream
 
       - name: Build Docker image
