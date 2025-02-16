@@ -8,14 +8,18 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        system: [x86_64-linux, x86_64-darwin, aarch64-linux]
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/flake-checker-action@main
-      - name: Build package
-        run: nix build .#plundrio
+      - name: Build package for ${{ matrix.system }}
+        run: nix build .#packages.${{ matrix.system }}.plundrio
       - name: Build docker image
-        run: nix build .#plundrio-docker
+        if: matrix.system == 'x86_64-linux'
+        run: nix build .#packages.x86_64-linux.plundrio-docker
 
   release:
     name: Release Build
