@@ -1,12 +1,14 @@
 # 🌊 plundrio
 
 <p align="center">
+<br/><br/>
 <i>
 Sailing the digital seas with ease,<br/>
 Fetching treasures as we please.<br/>
 With *arr at helm and Put.io's might,<br/>
 Downloads flow through day and night.
 </i>
+<br/><br/>
 </p>
 
 plundrio (`/ˈplʌndriˌoʊ/`) is a Put.io download client designed to seamlessly
