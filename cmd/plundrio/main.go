@@ -31,8 +31,16 @@ func main() {
 	}
 
 	// Ensure target directory exists
-	if err := os.MkdirAll(*targetDir, 0755); err != nil {
-		log.Fatalf("Failed to create target directory: %v", err)
+	// Verify target directory exists and is a directory
+	stat, err := os.Stat(*targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Fatalf("Target directory does not exist: %s", *targetDir)
+		}
+		log.Fatalf("Error checking target directory: %v", err)
+	}
+	if !stat.IsDir() {
+		log.Fatalf("Target path is not a directory: %s", *targetDir)
 	}
 
 	// Initialize configuration
