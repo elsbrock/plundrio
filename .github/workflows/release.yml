@@ -1,0 +1,41 @@
+name: "Release"
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    name: Release Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
+
+      - name: Build binary
+        run: nix build .#plundrio
+
+      - name: Upload binary artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./result
+          asset_name: plundrio-x86_64-linux
+          asset_content_type: application/octet-stream
+
+      - name: Build Docker image
+        run: nix build .#plundrio-docker
+
+      - name: Load and push Docker image
+        run: |
+          docker load < result
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }}:latest
