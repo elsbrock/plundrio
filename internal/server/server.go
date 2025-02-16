@@ -16,14 +16,14 @@ import (
 
 // Server handles transmission-rpc requests
 type Server struct {
-	cfg           *config.Config
-	client        *api.Client
-	srv           *http.Server
-	transfers     sync.Map // map[string]*putio.Transfer - magnet hash to transfer
-	quotaTicker   *time.Ticker
-	stopChan      chan struct{}
-	dlManager     *download.Manager
-	quotaWarning  bool // tracks if we've already warned about quota
+	cfg          *config.Config
+	client       *api.Client
+	srv          *http.Server
+	transfers    sync.Map // map[string]*putio.Transfer - magnet hash to transfer
+	quotaTicker  *time.Ticker
+	stopChan     chan struct{}
+	dlManager    *download.Manager
+	quotaWarning bool // tracks if we've already warned about quota
 }
 
 // New creates a new RPC server
@@ -155,9 +155,9 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		result, err = s.handleTorrentRemove(req.Arguments)
 	case "session-get":
 		result = map[string]interface{}{
-			"download-dir": s.cfg.TargetDir,
-			"version": "2.94", // Transmission version to report
-			"rpc-version": 15, // RPC version to report
+			"download-dir":        s.cfg.TargetDir,
+			"version":             "2.94", // Transmission version to report
+			"rpc-version":         15,     // RPC version to report
 			"rpc-version-minimum": 1,
 		}
 	default:
@@ -186,38 +186,38 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-// Get magnet link from either magnetLink or filename field
-var magnetLink string
-if params.MagnetLink != "" {
-	magnetLink = params.MagnetLink
-} else if params.Filename != "" && strings.HasPrefix(params.Filename, "magnet:") {
-	magnetLink = params.Filename
-} else {
-	return nil, fmt.Errorf("only magnet links are supported")
-}
+	// Get magnet link from either magnetLink or filename field
+	var magnetLink string
+	if params.MagnetLink != "" {
+		magnetLink = params.MagnetLink
+	} else if params.Filename != "" && strings.HasPrefix(params.Filename, "magnet:") {
+		magnetLink = params.Filename
+	} else {
+		return nil, fmt.Errorf("only magnet links are supported")
+	}
 
-// Check disk quota before adding transfer
-if overQuota, err := s.checkDiskQuota(); err != nil {
-	log.Printf("Warning: Failed to check disk quota before adding transfer: %v", err)
-} else if overQuota {
-	return nil, fmt.Errorf("cannot add transfer: Put.io account is over quota")
-}
+	// Check disk quota before adding transfer
+	if overQuota, err := s.checkDiskQuota(); err != nil {
+		log.Printf("Warning: Failed to check disk quota before adding transfer: %v", err)
+	} else if overQuota {
+		return nil, fmt.Errorf("cannot add transfer: Put.io account is over quota")
+	}
 
-// Add transfer to Put.io
-if err := s.client.AddTransfer(magnetLink, s.cfg.FolderID); err != nil {
-	return nil, fmt.Errorf("failed to add transfer: %w", err)
-}
+	// Add transfer to Put.io
+	if err := s.client.AddTransfer(magnetLink, s.cfg.FolderID); err != nil {
+		return nil, fmt.Errorf("failed to add transfer: %w", err)
+	}
 
-log.Printf("RPC: Added torrent to Put.io: %s", magnetLink)
+	log.Printf("RPC: Added torrent to Put.io: %s", magnetLink)
 
-// Return success response
-return map[string]interface{}{
-	"torrent-added": map[string]interface{}{
-		"id":         0, // Put.io doesn't use transmission IDs
-		"name":       magnetLink,
-		"hashString": "",
-	},
-}, nil
+	// Return success response
+	return map[string]interface{}{
+		"torrent-added": map[string]interface{}{
+			"id":         0, // Put.io doesn't use transmission IDs
+			"name":       magnetLink,
+			"hashString": "",
+		},
+	}, nil
 }
 
 // handleTorrentGet processes torrent-get requests

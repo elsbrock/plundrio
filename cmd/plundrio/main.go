@@ -37,12 +37,12 @@ func main() {
 
 	// Initialize configuration
 	cfg := &config.Config{
-		TargetDir:          *targetDir,
-		PutioFolder:        *putioFolder,
-		OAuthToken:         *oauthToken,
-		ListenAddr:         *listenAddr,
-		WorkerCount:        *workerCount,
-		EarlyFileDelete:    *earlyFileDelete,
+		TargetDir:       *targetDir,
+		PutioFolder:     *putioFolder,
+		OAuthToken:      *oauthToken,
+		ListenAddr:      *listenAddr,
+		WorkerCount:     *workerCount,
+		EarlyFileDelete: *earlyFileDelete,
 	}
 
 	// Initialize Put.io API client

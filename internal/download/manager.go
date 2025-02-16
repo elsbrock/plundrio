@@ -25,14 +25,14 @@ type downloadJob struct {
 
 // Manager handles downloading completed transfers from Put.io
 type Manager struct {
-	cfg           *config.Config
-	client        *api.Client
-	active        sync.Map // map[int64]*DownloadState
-	activeFiles   sync.Map // map[int64]bool - tracks files being downloaded
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	jobs          chan downloadJob
-	mu            sync.Mutex // protects job queueing
+	cfg         *config.Config
+	client      *api.Client
+	active      sync.Map // map[int64]*DownloadState
+	activeFiles sync.Map // map[int64]bool - tracks files being downloaded
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
+	jobs        chan downloadJob
+	mu          sync.Mutex // protects job queueing
 }
 
 // QueueDownload adds a download job to the queue if not already downloading
@@ -104,7 +104,7 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		client:      client,
 		stopChan:    make(chan struct{}),
 		jobs:        make(chan downloadJob, workerCount*2), // buffer size = 2x workers
-		activeFiles: sync.Map{}, // initialize activeFiles tracking
+		activeFiles: sync.Map{},                            // initialize activeFiles tracking
 	}
 
 	return m

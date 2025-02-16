@@ -153,4 +153,3 @@ func (c *Client) DeleteFile(fileID int64) error {
 	}
 	return nil
 }
-
