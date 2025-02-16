@@ -55,7 +55,7 @@ go install github.com/elsbrock/plundrio/cmd/plundrio@latest
 docker run --rm -it ghcr.io/elsbrock/plundrio:latest -- --help
 ```
 
-Make sure to expose the transmission RPC port (9091) and mount the download directory.
+Make sure to expose the transmission RPC port (default 9091) and mount the download directory.
 
 ### From Releases
 
@@ -71,22 +71,25 @@ Download the latest binary for your platform from the [releases page](https://gi
 
 ### Run the download manager
 
+```bash
 plundrio run \
   --target /path/to/downloads \
   --folder "plundrio" \
   --token YOUR_PUTIO_TOKEN \
   --workers 4
-
+```
 
 ### Generate configuration file
 
+```bash
 plundrio generate-config
-
+```
 
 ### Get OAuth token
 
+```bash
 plundrio get-token
-
+```
 
 ## ⚙️ Configuration
 
@@ -94,22 +97,24 @@ plundrio supports multiple configuration methods:
 
 1. **Config file** (YAML format):
 
+```yaml
 target: /path/to/downloads       # Target directory for downloads
-folder: "plundrio"					# Folder name on put.io
-token: "" 								# Get a token with get-token
-listen: ":9091"						# Transmission RPC server address
-workers: 4								# Number of download workers
-earlyDelete: false					# Delete files immediately on download
+folder: "plundrio"               # Folder name on put.io
+token: ""                        # Get a token with get-token
+listen: ":9091"                  # Transmission RPC server address
+workers: 4                       # Number of download workers
+earlyDelete: false               # Delete files immediately on download
+```
 
+1. **Command-line flags** (see full list with `plundrio run --help`)
+2. **Environment variables** (prefixed with `PLDR_`):
 
-2. **Command-line flags** (see full list with `plundrio run --help`)
-3. **Environment variables** (prefixed with PLDR_):
-
+```bash
 export PLDR_TARGET=/path/to/downloads
 export PLDR_TOKEN=your-putio-token
+```
 
-
-💡 **Security Note**: Avoid storing OAuth tokens in config files - use environment variables instead.
+💡 **Security Note**: Avoid storing OAuth tokens in config files or command-line argument - use environment variables instead.
 
 ## 🔌 Configuring *arr Applications
 
