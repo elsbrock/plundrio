@@ -39,7 +39,7 @@
             src = ./.;
 
             # Use the correct vendorHash provided by Nix
-            vendorHash = "sha256-haQIfg4gTkGf+UM1lqjT+BDMn4CB6Ab2+sj96WgSv3E=";
+            vendorHash = "sha256-0poj90E4qfG+XU1yzHddT/sKwu3jis1iD0OE22l9XYo=";
             proxyVendor = true;
 
             # Specify the correct package path
@@ -64,7 +64,7 @@
           ];
 
           shellHook = ''
-            echo "putioarr development shell"
+            echo "plundrio development shell"
             echo "Go $(go version)"
           '';
         };

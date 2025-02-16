@@ -1,0 +1,12 @@
+# Plundrio configuration
+# Save as ~/.plundrio.yaml or specify with --config
+
+targetDir: /path/to/downloads
+putioFolder: "plundrio"
+oauthToken: "" # Use put.io OAuth token or environment variable
+listenAddr: ":9091"
+workerCount: 4
+earlyFileDelete: false
+
+# Environment variables:
+# PLDR_TARGETDIR, PLDR_PUTIOFOLDER, PLDR_OAUTHTOKEN

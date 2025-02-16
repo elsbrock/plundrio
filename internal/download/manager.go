@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/elsbrock/putioarr/internal/api"
-	"github.com/elsbrock/putioarr/internal/config"
+	"github.com/elsbrock/plundrio/internal/api"
+	"github.com/elsbrock/plundrio/internal/config"
 	"github.com/putdotio/go-putio/putio"
 )
 

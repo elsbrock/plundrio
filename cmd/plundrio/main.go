@@ -10,15 +10,16 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/elsbrock/putioarr/internal/api"
-	"github.com/elsbrock/putioarr/internal/config"
-	"github.com/elsbrock/putioarr/internal/download"
-	"github.com/elsbrock/putioarr/internal/server"
+	"github.com/elsbrock/plundrio/internal/api"
+	"github.com/elsbrock/plundrio/internal/config"
+	"github.com/elsbrock/plundrio/internal/download"
+	"github.com/elsbrock/plundrio/internal/server"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "putioarr",
+	Use:   "plundrio",
 	Short: "Put.io automation tool",
 }
 
@@ -26,7 +27,23 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run the download manager",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Get flag values
+		// Initialize Viper
+		viper.SetEnvPrefix("PLDR")
+		viper.AutomaticEnv()
+
+		configFile, _ := cmd.Flags().GetString("config")
+		if configFile != "" {
+			viper.SetConfigFile(configFile)
+			if err := viper.ReadInConfig(); err != nil {
+				log.Fatalf("Error reading config file: %v", err)
+			}
+			log.Printf("Using config file: %s", viper.ConfigFileUsed())
+		}
+
+		// Bind flags to Viper
+		viper.BindPFlags(cmd.Flags())
+
+		// Get configuration values
 		targetDir, _ := cmd.Flags().GetString("target")
 		putioFolder, _ := cmd.Flags().GetString("folder")
 		oauthToken, _ := cmd.Flags().GetString("token")
@@ -35,6 +52,11 @@ var runCmd = &cobra.Command{
 		earlyFileDelete, _ := cmd.Flags().GetBool("early-delete")
 
 		// Validate required flags
+		// Security warning for token in config file
+		if viper.ConfigFileUsed() != "" && viper.IsSet("token") {
+			log.Println("WARNING: OAuth token found in config file - consider using environment variable PLDR_TOKEN instead")
+		}
+
 		if targetDir == "" || putioFolder == "" || oauthToken == "" {
 			log.Println("Error: not all required flags were provided")
 			cmd.Usage()
@@ -110,6 +132,36 @@ var runCmd = &cobra.Command{
 	},
 }
 
+var generateConfigCmd = &cobra.Command{
+	Use:   "generate-config",
+	Short: "Generate sample configuration file",
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg := `# Plundrio configuration
+# Save as ~/.plundrio.yaml or specify with --config
+
+targetDir: /path/to/downloads
+putioFolder: "plundrio"
+token: "" # Use put.io OAuth token or environment variable
+listenAddr: ":9091"
+workerCount: 4
+earlyFileDelete: false
+
+# Environment variables:
+# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN
+`
+
+		outputPath := "plundrio-config.yaml"
+		if len(args) > 0 {
+			outputPath = args[0]
+		}
+
+		if err := os.WriteFile(outputPath, []byte(cfg), 0644); err != nil {
+			log.Fatalf("Failed to write config file: %v", err)
+		}
+		log.Printf("Sample config created: %s", outputPath)
+	},
+}
+
 var getTokenCmd = &cobra.Command{
 	Use:   "get-token",
 	Short: "Get OAuth token using device code flow",
@@ -170,6 +222,7 @@ var getTokenCmd = &cobra.Command{
 
 func init() {
 	// Run command flags
+	runCmd.Flags().String("config", "", "Config file (default $HOME/.plundrio.yaml)")
 	runCmd.Flags().StringP("target", "t", "", "Target directory for downloads (required)")
 	runCmd.Flags().StringP("folder", "f", "plundrio", "Put.io folder name")
 	runCmd.Flags().StringP("token", "k", "", "Put.io OAuth token (required)")
@@ -179,6 +232,7 @@ func init() {
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(getTokenCmd)
+	rootCmd.AddCommand(generateConfigCmd)
 }
 
 func main() {

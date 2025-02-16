@@ -44,50 +44,62 @@ plundrio makes downloading from Put.io simple and automatic:
 ### Using Go
 
 ```bash
-go install github.com/elsbrock/plundrio/cmd/putioarr@latest
+go install github.com/elsbrock/plundrio/cmd/plundrio@latest
 ```
 
 ### From Releases
 
 Download the latest binary for your platform from the [releases page](https://github.com/elsbrock/plundrio/releases).
 
-## ⚙️ Configuration
-
-1. Create a configuration file at `~/.config/plundrio/config.yaml`:
-
-```yaml
-putio:
-  token: "your-put-io-token"
-
-server:
-  port: 9091
-  host: "localhost"
-
-download:
-  directory: "/path/to/downloads"
-  concurrent: 3
-```
-
-2. Configure your *arr application to use plundrio as a download client:
-   - Host: `localhost` (or your server IP)
-   - Port: `9091` (or your configured port)
-   - Category: (optional) for organized downloads
-
 ## 💡 Tips
 
-- We recommend turning off the trash bin in your Put.io settings
-- This helps keep your Put.io account clean and saves space
-- Trash cannot be deleted programmatically
+- We recommend turning off the trash bin in your Put.io settings. This helps keep your Put.io account clean and saves space. The trash cannot be deleted programmatically.
+- Downloads are throttled by put.io to 20MB/s. This means that if you have multiple downloads running at the same time, they will each download at 20MB/s. By default we run 4 downloads at a time - if you have more bandwidth, you can increase this number to saturate it.
+- If you set the default download folder of put.io to the folder configured in plundrio, you can automatically download files added eg. via chill.institute.
 
-## 🎮 Usage
+## 🎮 Commands
 
-Start the server:
-
+### Run the download manager
 ```bash
-plundrio
+plundrio run \
+  --target /path/to/downloads \
+  --folder "plundrio" \
+  --token YOUR_PUTIO_TOKEN \
+  --workers 4
 ```
 
-The server will begin listening for download requests from your *arr applications and manage Put.io downloads automatically.
+### Generate configuration file
+```bash
+plundrio generate-config
+```
+
+### Get OAuth token
+```bash
+plundrio get-token
+```
+
+## ⚙️ Configuration
+
+plundrio supports multiple configuration methods:
+
+1. **Config file** (YAML format):
+```yaml
+targetDir: /path/to/downloads
+putioFolder: "plundrio"
+token: "" # Use put.io OAuth token or environment variable
+listenAddr: ":9091"
+workerCount: 4
+earlyFileDelete: false
+```
+
+2. **Command-line flags** (see full list with `plundrio run --help`)
+3. **Environment variables** (prefixed with PLDR_):
+```bash
+export PLDR_TARGET=/path/to/downloads
+export PLDR_TOKEN=your-putio-token
+```
+
+💡 **Security Note**: Avoid storing OAuth tokens in config files - use environment variables instead.
 
 ## 🔌 Configuring *arr Applications
 
