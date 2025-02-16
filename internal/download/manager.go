@@ -138,6 +138,9 @@ func (m *Manager) Stop() {
 func (m *Manager) monitorTransfers() {
 	defer m.wg.Done()
 
+	// tick immediately on start
+	m.checkTransfers()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -178,7 +181,7 @@ func (m *Manager) checkTransfers() {
 			error++
 		}
 	}
-	log.Printf("Found transfers in target folder - Idle: %d, Downloading: %d, Seeding: %d, Completed: %d, Error: %d",
+	log.Printf("Transfers - Idle: %d, Downloading: %d, Seeding: %d, Completed: %d, Error: %d",
 		idle, downloading, seeding, completed, error)
 
 	// Get files in our target folder to check seeding status

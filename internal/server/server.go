@@ -38,9 +38,6 @@ func New(cfg *config.Config, client *api.Client, dlManager *download.Manager) *S
 
 // Start begins listening for RPC requests
 func (s *Server) Start() error {
-	// Start download manager
-	s.dlManager.Start()
-
 	// Check for incomplete downloads
 	incompleteDownloads, err := s.dlManager.FindIncompleteDownloads()
 	if err != nil {
