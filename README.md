@@ -84,12 +84,12 @@ plundrio supports multiple configuration methods:
 
 1. **Config file** (YAML format):
 ```yaml
-targetDir: /path/to/downloads
-putioFolder: "plundrio"
-token: "" # Use put.io OAuth token or environment variable
-listenAddr: ":9091"
-workerCount: 4
-earlyFileDelete: false
+target: /path/to/downloads       # Target directory for downloads
+folder: "plundrio"					# Folder name on Put.io
+token: "" 								# Get a token with get-token
+listen: ":9091"						# Transmission RPC server address
+workers: 4								# Number of download workers
+earlyDelete: false					# Delete files immediately on download
 ```
 
 2. **Command-line flags** (see full list with `plundrio run --help`)
