@@ -16,3 +16,51 @@ jobs:
         run: nix build .#plundrio
       - name: Build docker image
         run: nix build .#plundrio-docker
+
+  release:
+    name: Release Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    if: github.event_name == 'release'
+    strategy:
+      matrix:
+        system: [x86_64-linux, aarch64-darwin, x86_64-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
+
+      - name: Build binary for ${{ matrix.system }}
+        run: nix build .#plundrio --system ${{ matrix.system }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./result
+          asset_name: plundrio-${{ matrix.system }}
+          asset_content_type: application/octet-stream
+
+      - name: Build Docker image
+        if: matrix.system == 'x86_64-linux'
+        run: nix build .#plundrio-docker
+
+      - name: Load and push Docker image
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          docker load < result
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }}:latest
+
+  release-drafter:
+    name: Draft Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
