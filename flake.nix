@@ -1,5 +1,5 @@
 {
-  description = "plundrio - A Put.io integration for *arr applications";
+  description = "put.io download client for *arr applications";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -35,7 +35,7 @@
 
           plundrio = pkgs.buildGoModule {
             pname = "plundrio";
-            version = "0.1.0";
+            version = "0.9.0";
             src = ./.;
 
             # Use the correct vendorHash provided by Nix
