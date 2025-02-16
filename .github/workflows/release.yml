@@ -40,3 +40,5 @@ jobs:
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
           docker push ghcr.io/${{ github.repository }}:latest
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+          docker push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
