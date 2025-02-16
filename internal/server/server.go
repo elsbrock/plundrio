@@ -198,7 +198,7 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("failed to add transfer: %w", err)
 	}
 
-	log.Printf("RPC: Added torrent to Put.io: %s", magnetLink)
+	log.Printf("RPC: torrent added")
 
 	// Return success response
 	return map[string]interface{}{
@@ -263,6 +263,8 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 			log.Printf("RPC: Removed torrent with ID %d", id)
 		}
 	}
+
+	log.Printf("RPC: torrent removed")
 
 	return struct{}{}, nil
 }
@@ -332,13 +334,13 @@ func (s *Server) checkDiskQuota() (bool, error) {
 // sendResponse sends a success response
 func (s *Server) sendResponse(w http.ResponseWriter, tag interface{}, result interface{}) {
 	resp := struct {
-		Tag     interface{} `json:"tag,omitempty"`
-		Result  string      `json:"result"`
-		Message interface{} `json:"arguments,omitempty"`
+		Tag       interface{} `json:"tag,omitempty"`
+		Result    string      `json:"result"`
+		Arguments interface{} `json:"arguments,omitempty"`
 	}{
-		Tag:     tag,
-		Result:  "success",
-		Message: result,
+		Tag:       tag,
+		Result:    "success",
+		Arguments: result,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

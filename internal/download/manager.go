@@ -42,7 +42,6 @@ func (m *Manager) QueueDownload(job downloadJob) {
 
 	// Check if file is already being downloaded
 	if _, exists := m.activeFiles.Load(job.FileID); exists {
-		log.Printf("Skipping duplicate download of %s - already in progress", job.Name)
 		return
 	}
 
@@ -184,7 +183,7 @@ func (m *Manager) checkTransfers() {
 	log.Printf("Transfers - Idle: %d, Downloading: %d, Seeding: %d, Completed: %d, Error: %d",
 		idle, downloading, seeding, completed, error)
 
-	// Get files in our target folder to check seeding status
+	// Get files in our target folder to check seeding status and reconcile files
 	files, err := m.client.GetFiles(m.cfg.FolderID)
 	if err != nil {
 		log.Printf("Failed to get folder contents: %v", err)
@@ -195,6 +194,33 @@ func (m *Manager) checkTransfers() {
 	filesByName := make(map[string]*putio.File)
 	for _, file := range files {
 		filesByName[file.Name] = file
+
+		// For folders, we need to process them even if they exist locally
+		// to ensure all contents are synced
+		if file.IsDir() {
+			m.QueueDownload(downloadJob{
+				FileID:   file.ID,
+				Name:     file.Name,
+				IsFolder: true,
+			})
+		} else {
+			// For regular files, check if they exist locally
+			targetPath := filepath.Join(m.cfg.TargetDir, file.Name)
+			_, err := os.Stat(targetPath)
+			if os.IsNotExist(err) {
+				m.QueueDownload(downloadJob{
+					FileID:   file.ID,
+					Name:     file.Name,
+					IsFolder: false,
+				})
+			} else if err != nil {
+				log.Printf("Error checking local file %s: %v", file.Name, err)
+			} else if m.cfg.EarlyFileDelete {
+				if err := m.client.DeleteFile(file.ID); err != nil {
+					log.Printf("Failed to delete existing file: %v", err)
+				}
+			}
+		}
 	}
 
 	for _, transfer := range transfers {
@@ -237,25 +263,7 @@ func (m *Manager) checkTransfers() {
 		}
 	}
 
-	// Check for files that exist on Put.io but not locally
-	for _, file := range files {
-		targetPath := filepath.Join(m.cfg.TargetDir, file.Name)
-		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-			// File doesn't exist locally, queue it for download
-			log.Printf("Found missing local file, queueing download: %s", file.Name)
-			m.QueueDownload(downloadJob{
-				FileID:   file.ID,
-				Name:     file.Name,
-				IsFolder: file.IsDir(),
-			})
-		} else if err == nil && m.cfg.EarlyFileDelete {
-			// File exists locally and early deletion is enabled
-			log.Printf("Early cleanup of existing file: %s", file.Name)
-			if err := m.client.DeleteFile(file.ID); err != nil {
-				log.Printf("Failed to delete existing file: %v", err)
-			}
-		}
-	}
+	// We've already handled file reconciliation above, no need to check again
 }
 
 // downloadWorker processes download jobs from the queue
@@ -301,9 +309,10 @@ func (m *Manager) handleFolder(job downloadJob) {
 
 	// Queue all files and subfolders
 	for _, file := range files {
+		subPath := filepath.Join(job.Name, file.Name)
 		m.QueueDownload(downloadJob{
 			FileID:   file.ID,
-			Name:     filepath.Join(job.Name, file.Name),
+			Name:     subPath,
 			IsFolder: file.IsDir(),
 		})
 	}
@@ -418,12 +427,30 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Add User-Agent header
+	req.Header.Set("User-Agent", "plundrio/1.0")
+
 	if startOffset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
 	}
 
+	// Add common headers that might help
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Connection", "keep-alive")
+
+	// Create custom HTTP client with longer timeouts and keep-alive
+	client := &http.Client{
+		Timeout: 0, // No timeout for large downloads
+		Transport: &http.Transport{
+			DisableCompression: true,  // Disable compression for large files
+			DisableKeepAlives: false,  // Enable keep-alives
+			IdleConnTimeout: 60 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
+
 	// Download file
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to start download: %w", err)
 	}
@@ -500,11 +527,51 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	pr, pw := io.Pipe()
 	copyDone := make(chan error, 1)
 
+	// Test initial read to verify we can get data
+	testBuf := make([]byte, 8192)
+	n, err := reader.Read(testBuf)
+	if err != nil {
+		log.Printf("Initial read test failed for %s: %v", state.Name, err)
+		return fmt.Errorf("initial read test failed: %w", err)
+	}
+
+	// Write initial test data
+	if _, err := tempFile.Write(testBuf[:n]); err != nil {
+		log.Printf("Failed to write initial test data for %s: %v", state.Name, err)
+		return fmt.Errorf("failed to write initial data: %w", err)
+	}
+	downloaded += int64(n)
+
 	// Start copying in a goroutine
 	go func() {
-		_, err := io.Copy(tempFile, io.TeeReader(reader, pw))
-		pw.Close()
-		copyDone <- err
+		written, err := io.Copy(tempFile, reader)
+		if err != nil {
+			log.Printf("Copy error for %s: %v", state.Name, err)
+			copyDone <- err
+			return
+		}
+		written += int64(n) // Add initial test bytes
+		log.Printf("Copy completed for %s: wrote %d bytes total", state.Name, written)
+		copyDone <- nil
+	}()
+
+	// Add a timeout to detect stalled downloads
+	downloadTimeout := time.NewTimer(30 * time.Second)
+	defer downloadTimeout.Stop()
+
+	lastProgress := downloaded
+	go func() {
+		for {
+			select {
+			case <-time.After(5 * time.Second):
+				if downloaded == lastProgress && downloaded < totalSize {
+					log.Printf("Warning: Download appears stalled for %s - no progress in last 5 seconds", state.Name)
+				}
+				lastProgress = downloaded
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 
 	// Wait for either completion or cancellation
