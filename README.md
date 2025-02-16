@@ -1,11 +1,17 @@
 # 🌊 plundrio
 
-> Sailing the digital seas with ease,
-> Fetching treasures as we please.
-> With *arr at helm and Put.io's might,
-> Downloads flow through day and night.
+<p align="center">
+<i>
+Sailing the digital seas with ease,<br/>
+Fetching treasures as we please.<br/>
+With *arr at helm and Put.io's might,<br/>
+Downloads flow through day and night.
+</i>
+</p>
 
-A Put.io download client designed to seamlessly integrate with the *arr stack (Sonarr, Radarr, Lidarr, etc.).
+plundrio (`/ˈplʌndriˌoʊ/`) is a Put.io download client designed to seamlessly
+integrate with the *arr stack (Sonarr, Radarr, Lidarr, etc.). Files are
+automatically added to put.io and downloaded to the local disk once complete.
 
 ## 🚀 Features
 
@@ -104,20 +110,3 @@ plundrio will now automatically handle downloads from your *arr application thro
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Put.io](https://put.io) for their excellent service and API
-- The original [Rust-based putioarr](https://github.com/wouterdebie/putioarr/) that inspired this project
-- The *arr stack community for inspiration
