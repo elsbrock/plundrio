@@ -5,31 +5,31 @@
 <i>
 Sailing the digital seas with ease,<br/>
 Fetching treasures as we please.<br/>
-With *arr at helm and Put.io's might,<br/>
+With *arr at helm and put.io's might,<br/>
 Downloads flow through day and night.
 </i>
 <br/><br/>
 </p>
 
-plundrio (`/ˈplʌndriˌoʊ/`) is a Put.io download client designed to seamlessly
+plundrio (`/ˈplʌndriˌoʊ/`) is a put.io download client designed to seamlessly
 integrate with the *arr stack (Sonarr, Radarr, Lidarr, etc.). Files are
 automatically added to put.io and downloaded to the local disk once complete.
 
 ## 🚀 Features
 
 - 🔄 Seamless integration with Sonarr, Radarr, and other *arr applications
-- ⚡ Fast and efficient downloads from Put.io
+- ⚡ Fast and efficient downloads from put.io
 - 🎯 Automatic download management and organization
 - 🛠️ Easy configuration and setup
 - 📊 Download progress monitoring
 
 ## 🔧 How It Works
 
-plundrio makes downloading from Put.io simple and automatic:
+plundrio makes downloading from put.io simple and automatic:
 
 1. **Automatic Downloads**:
    - When your *arr apps (like Sonarr or Radarr) request new content, plundrio handles it automatically
-   - No need to manually download files from Put.io anymore
+   - No need to manually download files from put.io anymore
 
 2. **Parallel Downloads**:
    - Downloads multiple files at the same time
@@ -49,57 +49,65 @@ plundrio makes downloading from Put.io simple and automatic:
 go install github.com/elsbrock/plundrio/cmd/plundrio@latest
 ```
 
+### Using Docker
+
+```bash
+docker run --rm -it ghcr.io/elsbrock/plundrio:latest -- --help
+```
+
+Make sure to expose the transmission RPC port (9091) and mount the download directory.
+
 ### From Releases
 
 Download the latest binary for your platform from the [releases page](https://github.com/elsbrock/plundrio/releases).
 
 ## 💡 Tips
 
-- We recommend turning off the trash bin in your Put.io settings. This helps keep your Put.io account clean and saves space. The trash cannot be deleted programmatically.
+- We recommend turning off the trash bin in your put.io settings. This helps keep your put.io account clean and saves space. The trash cannot be deleted programmatically.
 - Downloads are throttled by put.io to 20MB/s. This means that if you have multiple downloads running at the same time, they will each download at 20MB/s. By default we run 4 downloads at a time - if you have more bandwidth, you can increase this number to saturate it.
 - If you set the default download folder of put.io to the folder configured in plundrio, you can automatically download files added eg. via chill.institute.
 
 ## 🎮 Commands
 
 ### Run the download manager
-```bash
+
 plundrio run \
   --target /path/to/downloads \
   --folder "plundrio" \
   --token YOUR_PUTIO_TOKEN \
   --workers 4
-```
+
 
 ### Generate configuration file
-```bash
+
 plundrio generate-config
-```
+
 
 ### Get OAuth token
-```bash
+
 plundrio get-token
-```
+
 
 ## ⚙️ Configuration
 
 plundrio supports multiple configuration methods:
 
 1. **Config file** (YAML format):
-```yaml
+
 target: /path/to/downloads       # Target directory for downloads
-folder: "plundrio"					# Folder name on Put.io
+folder: "plundrio"					# Folder name on put.io
 token: "" 								# Get a token with get-token
 listen: ":9091"						# Transmission RPC server address
 workers: 4								# Number of download workers
 earlyDelete: false					# Delete files immediately on download
-```
+
 
 2. **Command-line flags** (see full list with `plundrio run --help`)
 3. **Environment variables** (prefixed with PLDR_):
-```bash
+
 export PLDR_TARGET=/path/to/downloads
 export PLDR_TOKEN=your-putio-token
-```
+
 
 💡 **Security Note**: Avoid storing OAuth tokens in config files - use environment variables instead.
 
@@ -120,7 +128,7 @@ To add plundrio to your *arr application (Sonarr, Radarr, etc.):
 5. Click "Test" to verify the connection
 6. Save if the test is successful
 
-plundrio will now automatically handle downloads from your *arr application through Put.io.
+plundrio will now automatically handle downloads from your *arr application through put.io.
 
 ## 🤝 Contributing
 
