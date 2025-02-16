@@ -196,13 +196,6 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("only magnet links are supported")
 	}
 
-	// Check disk quota before adding transfer
-	if overQuota, err := s.checkDiskQuota(); err != nil {
-		log.Printf("Warning: Failed to check disk quota before adding transfer: %v", err)
-	} else if overQuota {
-		return nil, fmt.Errorf("cannot add transfer: Put.io account is over quota")
-	}
-
 	// Add transfer to Put.io
 	if err := s.client.AddTransfer(magnetLink, s.cfg.FolderID); err != nil {
 		return nil, fmt.Errorf("failed to add transfer: %w", err)
