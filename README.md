@@ -33,10 +33,6 @@ plundrio makes downloading from Put.io simple and automatic:
    - Automatically downloads any missing files
    - Makes sure your download folder stays organized
 
-4. **Space Saving Tip**:
-   - We recommend turning off the trash bin in your Put.io settings
-   - This helps keep your Put.io account clean and saves space
-
 ## 📦 Installation
 
 ### Using Go
@@ -70,6 +66,12 @@ download:
    - Host: `localhost` (or your server IP)
    - Port: `9091` (or your configured port)
    - Category: (optional) for organized downloads
+
+## 💡 Tips
+
+- We recommend turning off the trash bin in your Put.io settings
+- This helps keep your Put.io account clean and saves space
+- Trash cannot be deleted programmatically
 
 ## 🎮 Usage
 
