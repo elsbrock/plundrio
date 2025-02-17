@@ -118,22 +118,25 @@ func (s *Server) Stop() error {
 
 // handleRPC processes transmission-rpc requests
 func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		log.Printf("Invalid method %s from %s", r.Method, r.RemoteAddr)
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse RPC request
 	var req struct {
 		Method    string          `json:"method"`
 		Arguments json.RawMessage `json:"arguments"`
 		Tag       interface{}     `json:"tag,omitempty"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode request from %s: %v", r.RemoteAddr, err)
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	// Handle GET method for session-get
+	if r.Method == http.MethodGet {
+		req.Method = "session-get"
+	} else if r.Method == http.MethodPost {
+		// Parse RPC request for POST method
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("Failed to decode request from %s: %v", r.RemoteAddr, err)
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+	} else {
+		log.Printf("Invalid method %s from %s", r.Method, r.RemoteAddr)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
