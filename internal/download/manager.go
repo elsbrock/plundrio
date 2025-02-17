@@ -1,3 +1,5 @@
+// Package download provides functionality for managing downloads from Put.io.
+// It handles concurrent downloads, progress tracking, and cleanup of completed transfers.
 package download
 
 import (
@@ -16,14 +18,37 @@ import (
 	"github.com/putdotio/go-putio/putio"
 )
 
-// downloadJob represents a single download task
-type downloadJob struct {
-	FileID   int64
-	Name     string
-	IsFolder bool
+const (
+	defaultWorkerCount       = 4
+	progressUpdateInterval   = 5 * time.Second
+	downloadStallTimeout    = 1 * time.Minute
+	downloadHeaderTimeout   = 30 * time.Second
+	idleConnectionTimeout   = 60 * time.Second
+	downloadBufferMultiple  = 2 // Buffer size multiplier for download jobs channel
+)
+
+// ErrDownloadStalled is returned when a download makes no progress for too long
+type ErrDownloadStalled struct {
+	Filename string
+	Duration time.Duration
 }
 
-// Manager handles downloading completed transfers from Put.io
+func (e *ErrDownloadStalled) Error() string {
+	return fmt.Sprintf("download stalled for %v: %s", e.Duration, e.Filename)
+}
+
+// downloadJob represents a single download task
+type downloadJob struct {
+	FileID     int64
+	Name       string
+	IsFolder   bool
+	TransferID int64 // Parent transfer ID for group tracking
+}
+
+// Manager handles downloading completed transfers from Put.io.
+// It supports concurrent downloads, progress tracking, and automatic cleanup
+// of completed transfers. The manager uses a worker pool pattern to process
+// downloads efficiently while maintaining control over system resources.
 type Manager struct {
 	cfg         *config.Config
 	client      *api.Client
@@ -33,6 +58,11 @@ type Manager struct {
 	wg          sync.WaitGroup
 	jobs        chan downloadJob
 	mu          sync.Mutex // protects job queueing
+
+	// Transfer tracking
+	transferFiles     map[int64]int // Track total files per transfer
+	completedTransfers map[int64]bool // Track completed transfers
+	transferMutex    sync.Mutex
 }
 
 // QueueDownload adds a download job to the queue if not already downloading
@@ -98,15 +128,17 @@ type DownloadState struct {
 func New(cfg *config.Config, client *api.Client) *Manager {
 	workerCount := cfg.WorkerCount
 	if workerCount <= 0 {
-		workerCount = 4 // default to 4 workers
+		workerCount = defaultWorkerCount
 	}
 
 	m := &Manager{
-		cfg:         cfg,
-		client:      client,
-		stopChan:    make(chan struct{}),
-		jobs:        make(chan downloadJob, workerCount*2), // buffer size = 2x workers
-		activeFiles: sync.Map{},                            // initialize activeFiles tracking
+		cfg:                cfg,
+		client:             client,
+		stopChan:          make(chan struct{}),
+		jobs:              make(chan downloadJob, workerCount*downloadBufferMultiple),
+		activeFiles:       sync.Map{},
+		transferFiles:     make(map[int64]int),
+		completedTransfers: make(map[int64]bool),
 	}
 
 	return m
@@ -341,23 +373,53 @@ func (m *Manager) handleCompletedTransfer(transfer *putio.Transfer) {
 		return
 	}
 
+	// Count files in transfer and initialize tracking
+	m.transferMutex.Lock()
+	if file.IsDir() {
+		// For folders, get all files recursively
+		files, err := m.client.GetFiles(file.ID)
+		if err != nil {
+			log.Printf("Failed to get folder contents: %v", err)
+			m.transferMutex.Unlock()
+			state.Status = "error"
+			return
+		}
+		// Count all files (not folders) in the transfer
+		fileCount := 0
+		var countFiles func(files []*putio.File)
+		countFiles = func(files []*putio.File) {
+			for _, f := range files {
+				if f.IsDir() {
+					subFiles, err := m.client.GetFiles(f.ID)
+					if err != nil {
+						log.Printf("Failed to get subfolder contents: %v", err)
+						continue
+					}
+					countFiles(subFiles)
+				} else {
+					fileCount++
+				}
+			}
+		}
+		countFiles(files)
+		m.transferFiles[transfer.ID] = fileCount
+	} else {
+		// Single file transfer
+		m.transferFiles[transfer.ID] = 1
+	}
+	m.transferMutex.Unlock()
+
 	// Queue the initial download job
 	m.QueueDownload(downloadJob{
-		FileID:   file.ID,
-		Name:     file.Name,
-		IsFolder: file.IsDir(),
+		FileID:     file.ID,
+		Name:       file.Name,
+		IsFolder:   file.IsDir(),
+		TransferID: transfer.ID,
 	})
 
 	// Clean up the transfer from Put.io
 	if err := m.client.DeleteTransfer(transfer.ID); err != nil {
 		log.Printf("Failed to delete transfer: %v", err)
-	}
-
-	// If early deletion is enabled, delete the file now
-	if m.cfg.EarlyFileDelete {
-		if err := m.client.DeleteFile(file.ID); err != nil {
-			log.Printf("Failed to delete file early: %v", err)
-		}
 	}
 
 	state.Status = "completed"
@@ -377,7 +439,24 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	}()
 	defer cancel()
 	// Clean up activeFiles tracking when done
-	defer m.activeFiles.Delete(state.FileID)
+	defer func() {
+		m.activeFiles.Delete(state.FileID)
+
+		// Check if this was the last file in the transfer
+		m.transferMutex.Lock()
+		defer m.transferMutex.Unlock()
+		if transferID := state.TransferID; transferID > 0 {
+			m.transferFiles[transferID]--
+			if m.transferFiles[transferID] <= 0 && !m.completedTransfers[transferID] {
+				log.Printf("All files downloaded for transfer %d, deleting file %d", transferID, state.FileID)
+				if err := m.client.DeleteFile(state.FileID); err == nil {
+					m.completedTransfers[transferID] = true
+				} else {
+					log.Printf("Failed to delete file %d: %v", state.FileID, err)
+				}
+			}
+		}
+	}()
 
 	// Get download URL
 	url, err := m.client.GetDownloadURL(state.FileID)
@@ -466,6 +545,10 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 
 	// Set up progress tracking
 	totalSize := resp.ContentLength
+	if totalSize <= 0 {
+		return nil // No download of empty files
+	}
+
 	if startOffset > 0 && resp.StatusCode == http.StatusOK {
 		// Server doesn't support range requests, start over
 		log.Printf("Server doesn't support range requests, starting download from beginning for %s", state.Name)
@@ -485,7 +568,7 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	downloaded := startOffset // Start with existing bytes for progress calculation
 
 	// Create progress logging ticker
-	progressTicker := time.NewTicker(5 * time.Second)
+	progressTicker := time.NewTicker(progressUpdateInterval)
 	defer progressTicker.Stop()
 
 	// Create done channel for progress goroutine
@@ -506,8 +589,10 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 				if elapsed > 0 {
 					speed := float64(downloaded) / elapsed
 					remaining := float64(totalSize - downloaded)
-					etaSeconds := remaining / speed
-					state.ETA = time.Now().Add(time.Duration(etaSeconds) * time.Second)
+					if speed > 0 { // Avoid division by zero
+						etaSeconds := remaining / speed
+						state.ETA = time.Now().Add(time.Duration(etaSeconds) * time.Second)
+					}
 				}
 			}
 			state.LastProgress = time.Now()
@@ -543,31 +628,14 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	pr, pw := io.Pipe()
 	copyDone := make(chan error, 1)
 
-	// Test initial read to verify we can get data
-	testBuf := make([]byte, 8192)
-	n, err := reader.Read(testBuf)
-	if err != nil {
-		log.Printf("Initial read test failed for %s: %v", state.Name, err)
-		return fmt.Errorf("initial read test failed: %w", err)
-	}
-
-	// Write initial test data
-	if _, err := tempFile.Write(testBuf[:n]); err != nil {
-		log.Printf("Failed to write initial test data for %s: %v", state.Name, err)
-		return fmt.Errorf("failed to write initial data: %w", err)
-	}
-	downloaded += int64(n)
-
 	// Start copying in a goroutine
 	go func() {
-		written, err := io.Copy(tempFile, reader)
+		_, err := io.Copy(tempFile, reader)
 		if err != nil {
 			log.Printf("Copy error for %s: %v", state.Name, err)
 			copyDone <- err
 			return
 		}
-		written += int64(n) // Add initial test bytes
-		log.Printf("Copy completed for %s: wrote %d bytes total", state.Name, written)
 		copyDone <- nil
 	}()
 
@@ -627,13 +695,7 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return fmt.Errorf("failed to move file to target location: %w", err)
 	}
 
-	// Delete the file from Put.io if early deletion wasn't enabled
-	if !m.cfg.EarlyFileDelete {
-		if err := m.client.DeleteFile(state.FileID); err != nil {
-			log.Printf("Failed to delete file from Put.io after download: %v", err)
-			// Don't return error here as the download itself was successful
-		}
-	}
+	// File deletion is now handled at transfer level after all files complete
 
 	elapsed := time.Since(reader.startTime).Seconds()
 	averageSpeedMBps := (float64(totalSize) / 1024 / 1024) / elapsed
