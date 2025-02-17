@@ -84,11 +84,14 @@ func (m *Manager) FindIncompleteDownloads() ([]downloadJob, error) {
 
 // DownloadState tracks the progress of a file download
 type DownloadState struct {
-	TransferID int64
-	FileID     int64
-	Name       string
-	Status     string
-	Progress   float64
+	TransferID    int64
+	FileID        int64
+	Name          string
+	Status        string
+	Progress      float64
+	ETA           time.Time
+	LastProgress  time.Time
+	StartTime     time.Time
 }
 
 // New creates a new download manager
@@ -422,6 +425,7 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	}()
 
 	// Create request with Range header if resuming
+	log.Println("Downloading", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -488,14 +492,25 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	done := make(chan struct{})
 	defer close(done)
 
+	startTime := time.Now()
 	reader := &progressReader{
-		reader:    resp.Body,
-		startTime: time.Now(),
+		reader:     resp.Body,
+		startTime:  startTime,
 		onProgress: func(n int64) {
 			downloaded += n
 			if totalSize > 0 {
 				state.Progress = float64(downloaded) / float64(totalSize)
+
+				// Calculate ETA based on current download rate
+				elapsed := time.Since(startTime).Seconds()
+				if elapsed > 0 {
+					speed := float64(downloaded) / elapsed
+					remaining := float64(totalSize - downloaded)
+					etaSeconds := remaining / speed
+					state.ETA = time.Now().Add(time.Duration(etaSeconds) * time.Second)
+				}
 			}
+			state.LastProgress = time.Now()
 		},
 	}
 
@@ -511,8 +526,9 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 					totalMB := float64(totalSize) / 1024 / 1024
 					elapsed := time.Since(reader.startTime).Seconds()
 					speedMBps := downloadedMB / elapsed
-					log.Printf("Downloading %s: %.1f%% (%.1f/%.1f MB) - %.2f MB/s",
-						state.Name, progress, downloadedMB, totalMB, speedMBps)
+					eta := state.ETA.Sub(time.Now()).Round(time.Second)
+					log.Printf("Downloading %s: %.1f%% (%.1f/%.1f MB) - %.2f MB/s ETA: %s",
+						state.Name, progress, downloadedMB, totalMB, speedMBps, eta)
 				}
 			case <-ctx.Done():
 				log.Printf("Download of %s cancelled", state.Name)
@@ -560,14 +576,24 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	defer downloadTimeout.Stop()
 
 	lastProgress := downloaded
+	lastProgressTime := time.Now()
 	go func() {
 		for {
 			select {
 			case <-time.After(5 * time.Second):
-				if downloaded == lastProgress && downloaded < totalSize {
-					log.Printf("Warning: Download appears stalled for %s - no progress in last 5 seconds", state.Name)
+				currentDownloaded := downloaded
+				if currentDownloaded == lastProgress && currentDownloaded < totalSize {
+					stalledDuration := time.Since(lastProgressTime)
+					if stalledDuration > 1*time.Minute {
+						log.Printf("Download %s stalled for over 1 minute, cancelling", state.Name)
+						cancel()
+						return
+					}
+					log.Printf("Warning: Download %s stalled for %v", state.Name, stalledDuration.Round(time.Second))
+				} else {
+					lastProgress = currentDownloaded
+					lastProgressTime = time.Now()
 				}
-				lastProgress = downloaded
 			case <-ctx.Done():
 				return
 			}
