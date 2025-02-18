@@ -23,4 +23,10 @@ type Config struct {
 	// EarlyFileDelete controls whether to delete files from Put.io before download completion
 	// This can help manage Put.io storage space but may result in incomplete downloads if issues occur
 	EarlyFileDelete bool
+
+	// DeleteBeforeCompleted controls whether to delete files and transfers before they reach completed state
+	// If true, files will be deleted as soon as possible (even during seeding)
+	// If false, files will only be deleted once they reach completed state
+	// Default is true to maintain backward compatibility
+	DeleteBeforeCompleted bool
 }

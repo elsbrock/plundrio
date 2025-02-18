@@ -45,7 +45,7 @@ func (c *Client) Authenticate() error {
 func (c *Client) GetAccountInfo() (*putio.AccountInfo, error) {
 	account, err := c.client.Account.Info(c.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get account info: %w", err)
+		return nil, err
 	}
 	return &account, nil
 }
@@ -55,7 +55,7 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 	// List files at root to find folder
 	files, _, err := c.client.Files.List(c.ctx, 0)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list files: %w", err)
+		return 0, err
 	}
 
 	// Check if folder exists
@@ -68,7 +68,7 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 	// Create folder if it doesn't exist
 	folder, err := c.client.Files.CreateFolder(c.ctx, name, 0)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create folder: %w", err)
+		return 0, err
 	}
 
 	return folder.ID, nil
@@ -78,7 +78,7 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 func (c *Client) AddTransfer(magnetLink string, folderID int64) error {
 	transfer, err := c.client.Transfers.Add(c.ctx, magnetLink, folderID, "")
 	if err != nil {
-		return fmt.Errorf("failed to add transfer: %w", err)
+		return err
 	}
 
 	if transfer.Status == "ERROR" {
@@ -92,7 +92,7 @@ func (c *Client) AddTransfer(magnetLink string, folderID int64) error {
 func (c *Client) GetTransfers() ([]*putio.Transfer, error) {
 	transfers, err := c.client.Transfers.List(c.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list transfers: %w", err)
+		return nil, err
 	}
 
 	// Convert []putio.Transfer to []*putio.Transfer
@@ -107,7 +107,7 @@ func (c *Client) GetTransfers() ([]*putio.Transfer, error) {
 func (c *Client) GetDownloadURL(fileID int64) (string, error) {
 	url, err := c.client.Files.URL(c.ctx, fileID, false)
 	if err != nil {
-		return "", fmt.Errorf("failed to get download URL: %w", err)
+		return "", err
 	}
 	return url, nil
 }
@@ -116,7 +116,7 @@ func (c *Client) GetDownloadURL(fileID int64) (string, error) {
 func (c *Client) DeleteTransfer(transferID int64) error {
 	err := c.client.Transfers.Cancel(c.ctx, transferID)
 	if err != nil {
-		return fmt.Errorf("failed to delete transfer: %w", err)
+		return err
 	}
 	return nil
 }
@@ -125,7 +125,7 @@ func (c *Client) DeleteTransfer(transferID int64) error {
 func (c *Client) GetFiles(folderID int64) ([]*putio.File, error) {
 	files, _, err := c.client.Files.List(c.ctx, folderID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list files: %w", err)
+		return nil, err
 	}
 
 	// Convert []putio.File to []*putio.File
@@ -136,20 +136,41 @@ func (c *Client) GetFiles(folderID int64) ([]*putio.File, error) {
 	return result, nil
 }
 
-// GetFile gets information about a specific file
-func (c *Client) GetFile(fileID int64) (*putio.File, error) {
-	file, err := c.client.Files.Get(c.ctx, fileID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file: %w", err)
-	}
-	return &file, nil
-}
-
 // DeleteFile removes a file from Put.io
 func (c *Client) DeleteFile(fileID int64) error {
 	err := c.client.Files.Delete(c.ctx, fileID)
 	if err != nil {
-		return fmt.Errorf("failed to delete file: %w", err)
+		return err
 	}
 	return nil
+}
+
+// GetAllTransferFiles recursively gets all files in a transfer
+func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
+	var allFiles []*putio.File
+	var getFiles func(id int64) error
+
+	getFiles = func(id int64) error {
+		files, err := c.GetFiles(id)
+		if err != nil {
+			return err
+		}
+
+		for _, file := range files {
+			if file.IsDir() {
+				if err := getFiles(file.ID); err != nil {
+					return err
+				}
+			} else {
+				allFiles = append(allFiles, file)
+			}
+		}
+		return nil
+	}
+
+	if err := getFiles(fileID); err != nil {
+		return nil, err
+	}
+
+	return allFiles, nil
 }
