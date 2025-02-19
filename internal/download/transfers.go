@@ -198,20 +198,29 @@ func (m *Manager) processTransfer(transfer *putio.Transfer) {
 		return
 	}
 
+	// Store transfer name for path construction
+	m.transferMutex.Lock()
+	m.transferNames[transfer.ID] = transfer.Name
+	m.transferMutex.Unlock()
+
 	// Count files that need downloading
 	filesToDownload := 0
 	for _, file := range files {
-		targetPath := filepath.Join(m.cfg.TargetDir, file.Name)
+		targetPath := filepath.Join(m.cfg.TargetDir, transfer.Name, file.Name)
 		info, err := os.Stat(targetPath)
 
 		// File needs downloading if it doesn't exist or size doesn't match
 		if err != nil || info.Size() != file.Size {
+			// Check if file is already being downloaded
+			if _, exists := m.activeFiles.Load(file.ID); exists {
+				continue
+			}
 			filesToDownload++
-			log.Println("Queueing download for", file.Name)
+			log.Printf("Queueing download for %s", file.Name)
 			// Queue download for this file
 			m.QueueDownload(downloadJob{
 				FileID:     file.ID,
-				Name:       file.Name,
+				Name:       filepath.Join(transfer.Name, file.Name),
 				TransferID: transfer.ID,
 			})
 		}

@@ -10,18 +10,22 @@ import (
 // setupProgressTracking configures progress tracking for the download
 func (m *Manager) setupProgressTracking(state *DownloadState, body io.Reader, downloaded *int64, totalSize int64) *progressReader {
 	startTime := time.Now()
-	return &progressReader{
-		reader:    body,
-		startTime: startTime,
+	bytesThisSession := int64(0)
+	reader := &progressReader{
+		reader:       body,
+		startTime:    startTime,
+		initialBytes: *downloaded, // Store initial bytes for speed calculation
 		onProgress: func(n int64) {
 			*downloaded += n
+			bytesThisSession += n
 			if totalSize > 0 {
 				state.Progress = float64(*downloaded) / float64(totalSize)
 
 				// Calculate ETA based on current download rate
 				elapsed := time.Since(startTime).Seconds()
 				if elapsed > 0 {
-					speed := float64(*downloaded) / elapsed
+					// Use only bytes downloaded this session for speed
+					speed := float64(bytesThisSession) / elapsed
 					remaining := float64(totalSize - *downloaded)
 					if speed > 0 { // Avoid division by zero
 						etaSeconds := remaining / speed
@@ -32,6 +36,7 @@ func (m *Manager) setupProgressTracking(state *DownloadState, body io.Reader, do
 			state.LastProgress = time.Now()
 		},
 	}
+	return reader
 }
 
 // monitorDownloadProgress starts a goroutine to monitor and log download progress
@@ -46,7 +51,9 @@ func (m *Manager) monitorDownloadProgress(ctx context.Context, state *DownloadSt
 					downloadedMB := float64(*downloaded) / 1024 / 1024
 					totalMB := float64(totalSize) / 1024 / 1024
 					elapsed := time.Since(reader.startTime).Seconds()
-					speedMBps := downloadedMB / elapsed
+					// Calculate speed based on bytes downloaded in this session
+					sessionBytes := float64(*downloaded - reader.initialBytes) / 1024 / 1024
+					speedMBps := sessionBytes / elapsed
 					eta := state.ETA.Sub(time.Now()).Round(time.Second)
 					log.Printf("Downloading %s: %.1f%% (%.1f/%.1f MB) - %.2f MB/s ETA: %s",
 						state.Name, progress, downloadedMB, totalMB, speedMBps, eta)

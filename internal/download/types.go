@@ -33,9 +33,10 @@ type DownloadState struct {
 
 // progressReader wraps an io.Reader to track download progress
 type progressReader struct {
-	reader     io.Reader
-	onProgress func(n int64)
-	startTime  time.Time
+	reader       io.Reader
+	onProgress   func(n int64)
+	startTime    time.Time
+	initialBytes int64
 }
 
 func (r *progressReader) Read(p []byte) (n int, err error) {

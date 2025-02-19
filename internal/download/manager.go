@@ -34,8 +34,9 @@ type Manager struct {
 	mu          sync.Mutex // protects job queueing
 
 	// Transfer tracking
-	transferFiles       map[int64]int  // Track total files per transfer
-	completedTransfers map[int64]bool // Track completed transfers
+	transferFiles       map[int64]int            // Track total files per transfer
+	transferNames      map[int64]string         // Track transfer names
+	completedTransfers map[int64]bool          // Track completed transfers
 	transferMutex      sync.Mutex
 }
 
@@ -53,6 +54,7 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		jobs:              make(chan downloadJob, workerCount*downloadBufferMultiple),
 		activeFiles:       sync.Map{},
 		transferFiles:     make(map[int64]int),
+		transferNames:     make(map[int64]string),
 		completedTransfers: make(map[int64]bool),
 	}
 

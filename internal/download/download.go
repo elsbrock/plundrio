@@ -47,8 +47,13 @@ func (m *Manager) handleFolder(job downloadJob) {
 		return
 	}
 
-	// Create the folder
-	folderPath := filepath.Join(m.cfg.TargetDir, job.Name)
+	// Get transfer name from stored map
+	m.transferMutex.Lock()
+	transferName := m.transferNames[job.TransferID]
+	m.transferMutex.Unlock()
+
+	// Create the folder under transfer name
+	folderPath := filepath.Join(m.cfg.TargetDir, transferName, job.Name)
 	if err := os.MkdirAll(folderPath, 0755); err != nil {
 		log.Printf("Failed to create folder %s: %v", folderPath, err)
 		return
@@ -56,7 +61,7 @@ func (m *Manager) handleFolder(job downloadJob) {
 
 	// Queue all files and subfolders
 	for _, file := range files {
-		subPath := filepath.Join(job.Name, file.Name)
+		subPath := filepath.Join(transferName, job.Name, file.Name)
 		m.QueueDownload(downloadJob{
 			FileID:   file.ID,
 			Name:     subPath,
@@ -120,10 +125,13 @@ func (m *Manager) setupTransferCleanup(state *DownloadState) func() {
 					return
 				}
 
+				// Get transfer name from stored map
+				transferName := m.transferNames[transferID]
+
 				// Check each file exists locally with matching size
 				allFilesExist := true
 				for _, file := range files {
-					localPath := filepath.Join(m.cfg.TargetDir, file.Name)
+					localPath := filepath.Join(m.cfg.TargetDir, transferName, file.Name)
 					info, err := os.Stat(localPath)
 					if err != nil {
 						if os.IsNotExist(err) {
@@ -180,12 +188,8 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	}
 	defer func() {
 		tempFile.Close()
-		if err != nil {
-			os.Remove(tempPath)
-		}
 	}()
 
-	log.Println("Downloading", url)
 	req, err := m.createDownloadRequest(ctx, url, startOffset)
 	if err != nil {
 		return err
@@ -266,7 +270,6 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		pr.Close()
 		pw.Close()
 		tempFile.Close()
-		os.Remove(tempPath)
 		return fmt.Errorf("download cancelled")
 	}
 }
