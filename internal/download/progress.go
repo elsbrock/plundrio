@@ -52,7 +52,7 @@ func (m *Manager) monitorDownloadProgress(ctx context.Context, state *DownloadSt
 					totalMB := float64(totalSize) / 1024 / 1024
 					elapsed := time.Since(reader.startTime).Seconds()
 					// Calculate speed based on bytes downloaded in this session
-					sessionBytes := float64(*downloaded - reader.initialBytes) / 1024 / 1024
+					sessionBytes := float64(*downloaded-reader.initialBytes) / 1024 / 1024
 					speedMBps := sessionBytes / elapsed
 					eta := state.ETA.Sub(time.Now()).Round(time.Second)
 					log.Printf("Downloading %s: %.1f%% (%.1f/%.1f MB) - %.2f MB/s ETA: %s",

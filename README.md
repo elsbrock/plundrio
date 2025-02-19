@@ -22,6 +22,8 @@ automatically added to put.io and downloaded to the local disk once complete.
 - 🎯 Automatic download management and organization
 - 🛠️ Easy configuration and setup
 - 📊 Download progress monitoring
+- 🔃 Configurable parallel downloads
+- 🗑️ Flexible file deletion strategies
 
 ## 🔧 How It Works
 
@@ -35,11 +37,13 @@ plundrio makes downloading from put.io simple and automatic:
    - Downloads multiple files at the same time
    - You control how many downloads run simultaneously through configuration
    - Efficiently uses your available bandwidth
+   - Each connection is limited to put.io's 20MB/s throttle
 
 3. **File Management**:
    - Keeps track of what's already downloaded
    - Automatically downloads any missing files
    - Makes sure your download folder stays organized
+   - Configurable deletion strategies for completed downloads
 
 ## 📦 Installation
 
@@ -64,8 +68,9 @@ Download the latest binary for your platform from the [releases page](https://gi
 ## 💡 Tips
 
 - We recommend turning off the trash bin in your put.io settings. This helps keep your put.io account clean and saves space. The trash cannot be deleted programmatically.
-- Downloads are throttled by put.io to 20MB/s. This means that if you have multiple downloads running at the same time, they will each download at 20MB/s. By default we run 4 downloads at a time - if you have more bandwidth, you can increase this number to saturate it.
-- If you set the default download folder of put.io to the folder configured in plundrio, you can automatically download files added eg. via chill.institute.
+- Downloads are throttled by put.io to 20MB/s per connection. This means that if you have multiple downloads running at the same time, they will each download at 20MB/s. The default worker count of 4 allows up to 80MB/s total throughput.
+- If you set the default download folder of put.io to the folder configured in plundrio, you can automatically download files added through other means (e.g., via chill.institute).
+- Using environment variables for sensitive data like OAuth tokens is recommended for security.
 
 ## 🎮 Commands
 
@@ -98,23 +103,26 @@ plundrio supports multiple configuration methods:
 1. **Config file** (YAML format):
 
 ```yaml
-target: /path/to/downloads       # Target directory for downloads
-folder: "plundrio"               # Folder name on put.io
-token: ""                        # Get a token with get-token
-listen: ":9091"                  # Transmission RPC server address
-workers: 4                       # Number of download workers
-earlyDelete: false               # Delete files immediately on download
+targetDir: /path/to/downloads     # Target directory for downloads
+putioFolder: "plundrio"          # Folder name on put.io
+oauthToken: ""                   # Put.io OAuth token (prefer env var)
+listenAddr: ":9091"             # Transmission RPC server address
+workerCount: 4                  # Number of download workers
+deleteBeforeCompleted: false    # Delete files after download completion
 ```
 
-1. **Command-line flags** (see full list with `plundrio run --help`)
-2. **Environment variables** (prefixed with `PLDR_`):
+2. **Command-line flags** (see full list with `plundrio run --help`)
+3. **Environment variables** (prefixed with `PLDR_`):
 
 ```bash
-export PLDR_TARGET=/path/to/downloads
-export PLDR_TOKEN=your-putio-token
+export PLDR_TARGETDIR=/path/to/downloads
+export PLDR_OAUTHTOKEN=your-putio-token
+export PLDR_PUTIOFOLDER=plundrio
+export PLDR_LISTENADDR=:9091
+export PLDR_WORKERCOUNT=4
 ```
 
-💡 **Security Note**: Avoid storing OAuth tokens in config files or command-line argument - use environment variables instead.
+💡 **Security Note**: Store OAuth tokens in environment variables rather than config files or command-line arguments for better security.
 
 ## 🔌 Configuring *arr Applications
 

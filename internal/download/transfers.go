@@ -35,20 +35,18 @@ func (m *Manager) FindIncompleteDownloads() ([]downloadJob, error) {
 
 // monitorTransfers periodically checks for completed transfers
 func (m *Manager) monitorTransfers() {
-	defer m.wg.Done()
+    m.checkTransfers() // Initial check
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
 
-	m.checkTransfers() // Initial check
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.stopChan:
-			return
-		case <-ticker.C:
-			m.checkTransfers()
-		}
-	}
+    for {
+        select {
+        case <-m.stopChan:
+            return
+        case <-ticker.C:
+            m.checkTransfers()
+        }
+    }
 }
 
 // checkTransfers looks for completed or seeding transfers and processes them
@@ -137,17 +135,21 @@ func (m *Manager) checkTransfers() {
 			continue
 		}
 
-		log.Printf("Found transfer '%s' (status: %s, folder: %d)",
-			transfer.Name, transfer.Status, transfer.SaveParentID)
+		// Only log if not already downloading
+		if _, exists := m.activeFiles.Load(transfer.FileID); !exists {
+			log.Printf("Found transfer '%s' (status: %s)",
+			transfer.Name, transfer.Status)
+		}
+
 		switch transfer.Status {
 		case "COMPLETED", "SEEDING":
-			m.wg.Add(1)
-			go m.processTransfer(transfer)
+		    m.workerWg.Add(1)
+		    go m.processTransfer(transfer)
 		case "ERROR":
-			log.Printf("Transfer error: %s - %s", transfer.Name, transfer.ErrorMessage)
-			if err := m.client.DeleteTransfer(transfer.ID); err != nil {
-				log.Printf("Failed to delete failed transfer: %v", err)
-			}
+		    log.Printf("Transfer error: %s - %s", transfer.Name, transfer.ErrorMessage)
+		    if err := m.client.DeleteTransfer(transfer.ID); err != nil {
+		        log.Printf("Failed to delete failed transfer: %v", err)
+		    }
 		}
 	}
 }
@@ -173,7 +175,7 @@ func formatETA(seconds int) string {
 
 // processTransfer handles downloading of a completed or seeding transfer
 func (m *Manager) processTransfer(transfer *putio.Transfer) {
-	defer m.wg.Done()
+    defer m.workerWg.Done()
 
 	state := &DownloadState{
 		TransferID: transfer.ID,
@@ -228,23 +230,9 @@ func (m *Manager) processTransfer(transfer *putio.Transfer) {
 
 	// Update transfer files count for tracking
 	m.transferMutex.Lock()
+	m.transferFiles[transfer.ID] = filesToDownload
 	if filesToDownload > 0 {
 		log.Printf("Queued %d files for download from transfer '%s'", filesToDownload, transfer.Name)
-		m.transferFiles[transfer.ID] = filesToDownload
-	} else {
-		log.Printf("All files already exist locally for transfer '%s', cleaning up", transfer.Name)
-		// Clean up immediately since no downloads are needed
-		if transfer.Status == "COMPLETED" || (transfer.Status == "SEEDING" && m.cfg.DeleteBeforeCompleted) {
-			log.Printf("Cleaning up '%s' from Put.io (status: %s)", transfer.Name, transfer.Status)
-			if err := m.client.DeleteFile(transfer.FileID); err != nil {
-				log.Printf("Failed to delete '%s' from Put.io: %v", transfer.Name, err)
-			}
-			if err := m.client.DeleteTransfer(transfer.ID); err != nil {
-				log.Printf("Failed to delete transfer for '%s': %v", transfer.Name, err)
-			}
-		} else {
-			log.Printf("Keeping '%s' on Put.io for seeding", transfer.Name)
-		}
 	}
 	m.transferMutex.Unlock()
 

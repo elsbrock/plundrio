@@ -20,10 +20,6 @@ type Config struct {
 	// WorkerCount is the number of concurrent download workers (default: 4)
 	WorkerCount int
 
-	// EarlyFileDelete controls whether to delete files from Put.io before download completion
-	// This can help manage Put.io storage space but may result in incomplete downloads if issues occur
-	EarlyFileDelete bool
-
 	// DeleteBeforeCompleted controls whether to delete files and transfers before they reach completed state
 	// If true, files will be deleted as soon as possible (even during seeding)
 	// If false, files will only be deleted once they reach completed state

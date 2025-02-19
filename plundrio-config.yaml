@@ -6,7 +6,6 @@ putioFolder: "plundrio"
 oauthToken: "" # Use put.io OAuth token or environment variable
 listenAddr: ":9091"
 workerCount: 4
-earlyFileDelete: false
 
 # Environment variables:
 # PLDR_TARGETDIR, PLDR_PUTIOFOLDER, PLDR_OAUTHTOKEN

@@ -21,14 +21,14 @@ type downloadJob struct {
 
 // DownloadState tracks the progress of a file download
 type DownloadState struct {
-	TransferID    int64
-	FileID        int64
-	Name          string
-	Status        string
-	Progress      float64
-	ETA           time.Time
-	LastProgress  time.Time
-	StartTime     time.Time
+	TransferID   int64
+	FileID       int64
+	Name         string
+	Status       string
+	Progress     float64
+	ETA          time.Time
+	LastProgress time.Time
+	StartTime    time.Time
 }
 
 // progressReader wraps an io.Reader to track download progress

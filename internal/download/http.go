@@ -67,8 +67,8 @@ func (m *Manager) createHTTPClient() *http.Client {
 		Timeout: 0, // No timeout for large downloads
 		Transport: &http.Transport{
 			DisableCompression:    true,  // Disable compression for large files
-			DisableKeepAlives:    false, // Enable keep-alives
-			IdleConnTimeout:      idleConnectionTimeout,
+			DisableKeepAlives:     false, // Enable keep-alives
+			IdleConnTimeout:       idleConnectionTimeout,
 			ResponseHeaderTimeout: downloadHeaderTimeout,
 		},
 	}

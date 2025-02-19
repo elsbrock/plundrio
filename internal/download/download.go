@@ -15,27 +15,31 @@ import (
 
 // downloadWorker processes download jobs from the queue
 func (m *Manager) downloadWorker() {
-	defer m.wg.Done()
+    defer m.workerWg.Done()
 
-	for {
-		select {
-		case <-m.stopChan:
-			return
-		case job := <-m.jobs:
-			if job.IsFolder {
-				m.handleFolder(job)
-			} else {
-				state := &DownloadState{
-					FileID: job.FileID,
-					Name:   job.Name,
-					Status: "downloading",
-				}
-				if err := m.downloadFile(state); err != nil {
-					log.Printf("Failed to download %s: %v", job.Name, err)
-				}
-			}
-		}
-	}
+    for {
+        select {
+        case <-m.stopChan:
+            return
+        case job, ok := <-m.jobs:
+            if !ok {
+                // Channel closed, exit worker
+                return
+            }
+            if job.IsFolder {
+                m.handleFolder(job)
+            } else {
+                state := &DownloadState{
+                    FileID: job.FileID,
+                    Name:   job.Name,
+                    Status: "downloading",
+                }
+                if err := m.downloadFile(state); err != nil {
+                    log.Printf("Failed to download %s: %v", job.Name, err)
+                }
+            }
+        }
+    }
 }
 
 // handleFolder processes a folder and queues its contents for download
@@ -93,7 +97,9 @@ func (m *Manager) setupTransferCleanup(state *DownloadState) func() {
 		defer m.transferMutex.Unlock()
 
 		if transferID := state.TransferID; transferID > 0 {
-			m.transferFiles[transferID]--
+			if m.transferFiles[transferID] > 0 {
+				m.transferFiles[transferID]--
+			}
 			if m.transferFiles[transferID] <= 0 {
 				log.Printf("All files for '%s' have been downloaded", state.Name)
 
@@ -187,7 +193,10 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return err
 	}
 	defer func() {
-		tempFile.Close()
+		err := tempFile.Close()
+		if err != nil {
+			log.Printf("Error closing temp file: %v", err)
+		}
 	}()
 
 	req, err := m.createDownloadRequest(ctx, url, startOffset)
@@ -269,7 +278,6 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		// Clean up on cancellation
 		pr.Close()
 		pw.Close()
-		tempFile.Close()
 		return fmt.Errorf("download cancelled")
 	}
 }

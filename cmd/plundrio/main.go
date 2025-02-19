@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-	"encoding/json"
-	"net/http"
 
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
@@ -49,7 +49,6 @@ var runCmd = &cobra.Command{
 		oauthToken, _ := cmd.Flags().GetString("token")
 		listenAddr, _ := cmd.Flags().GetString("listen")
 		workerCount, _ := cmd.Flags().GetInt("workers")
-		earlyFileDelete, _ := cmd.Flags().GetBool("early-delete")
 
 		// Validate required flags
 		// Security warning for token in config file
@@ -77,12 +76,11 @@ var runCmd = &cobra.Command{
 
 		// Initialize configuration
 		cfg := &config.Config{
-			TargetDir:       targetDir,
-			PutioFolder:     putioFolder,
-			OAuthToken:      oauthToken,
-			ListenAddr:      listenAddr,
-			WorkerCount:     workerCount,
-			EarlyFileDelete: earlyFileDelete,
+			TargetDir:   targetDir,
+			PutioFolder: putioFolder,
+			OAuthToken:  oauthToken,
+			ListenAddr:  listenAddr,
+			WorkerCount: workerCount,
 		}
 
 		// Initialize Put.io API client
