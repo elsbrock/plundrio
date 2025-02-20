@@ -9,37 +9,34 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/putdotio/go-putio/putio"
 )
 
 // downloadWorker processes download jobs from the queue
 func (m *Manager) downloadWorker() {
-    defer m.workerWg.Done()
+	defer m.workerWg.Done()
 
-    for {
-        select {
-        case <-m.stopChan:
-            return
-        case job, ok := <-m.jobs:
-            if !ok {
-                // Channel closed, exit worker
-                return
-            }
-            if job.IsFolder {
-                m.handleFolder(job)
-            } else {
-                state := &DownloadState{
-                    FileID: job.FileID,
-                    Name:   job.Name,
-                    Status: "downloading",
-                }
-                if err := m.downloadFile(state); err != nil {
-                    log.Printf("Failed to download %s: %v", job.Name, err)
-                }
-            }
-        }
-    }
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case job, ok := <-m.jobs:
+			if !ok {
+				// Channel closed, exit worker
+				return
+			}
+			if job.IsFolder {
+				m.handleFolder(job)
+			} else {
+				state := &DownloadState{
+					FileID: job.FileID,
+					Name:   job.Name,
+				}
+				if err := m.downloadFile(state); err != nil {
+					log.Printf("Failed to download %s: %v", job.Name, err)
+				}
+			}
+		}
+	}
 }
 
 // handleFolder processes a folder and queues its contents for download
@@ -51,10 +48,12 @@ func (m *Manager) handleFolder(job downloadJob) {
 		return
 	}
 
-	// Get transfer name from stored map
-	m.transferMutex.Lock()
-	transferName := m.transferNames[job.TransferID]
-	m.transferMutex.Unlock()
+	transfer, ok := m.active.Load(job.TransferID)
+	if !ok {
+		log.Printf("Failed to get transfer for %s: %v", job.Name, err)
+		return
+	}
+	transferName := transfer.(*DownloadState).Name
 
 	// Create the folder under transfer name
 	folderPath := filepath.Join(m.cfg.TargetDir, transferName, job.Name)
@@ -87,101 +86,10 @@ func (m *Manager) setupDownloadContext() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-// setupTransferCleanup sets up cleanup for the download state and transfer tracking
-func (m *Manager) setupTransferCleanup(state *DownloadState) func() {
-	return func() {
-		m.activeFiles.Delete(state.FileID)
-
-		// Clean up the active downloads tracking and handle transfer completion
-		m.transferMutex.Lock()
-		defer m.transferMutex.Unlock()
-
-		if transferID := state.TransferID; transferID > 0 {
-			if m.transferFiles[transferID] > 0 {
-				m.transferFiles[transferID]--
-			}
-			if m.transferFiles[transferID] <= 0 {
-				log.Printf("All files for '%s' have been downloaded", state.Name)
-
-				// Get transfers to determine status
-				transfers, err := m.client.GetTransfers()
-				if err != nil {
-					log.Printf("Failed to get transfer status: %v", err)
-					return
-				}
-
-				// Find our transfer
-				var targetTransfer *putio.Transfer
-				for _, t := range transfers {
-					if t.ID == transferID {
-						targetTransfer = t
-						break
-					}
-				}
-
-				if targetTransfer == nil {
-					log.Printf("Transfer for '%s' no longer exists on Put.io", state.Name)
-					return
-				}
-
-				// Verify all files exist locally before cleanup
-				files, err := m.client.GetAllTransferFiles(targetTransfer.FileID)
-				if err != nil {
-					log.Printf("Failed to get files for transfer %d: %v", transferID, err)
-					return
-				}
-
-				// Get transfer name from stored map
-				transferName := m.transferNames[transferID]
-
-				// Check each file exists locally with matching size
-				allFilesExist := true
-				for _, file := range files {
-					localPath := filepath.Join(m.cfg.TargetDir, transferName, file.Name)
-					info, err := os.Stat(localPath)
-					if err != nil {
-						if os.IsNotExist(err) {
-							allFilesExist = false
-							break
-						}
-						log.Printf("Failed to check local file %s: %v", localPath, err)
-						return
-					}
-
-					if info.Size() != file.Size {
-						allFilesExist = false
-						break
-					}
-				}
-
-				if allFilesExist {
-					shouldDelete := targetTransfer.Status == "COMPLETED" ||
-						(targetTransfer.Status == "SEEDING" && m.cfg.DeleteBeforeCompleted)
-
-					if shouldDelete {
-						log.Printf("All files exist locally for '%s', cleaning up from Put.io (status: %s)", state.Name, targetTransfer.Status)
-						if err := m.client.DeleteFile(targetTransfer.FileID); err != nil {
-							log.Printf("Failed to delete '%s' from Put.io: %v", state.Name, err)
-						}
-						if err := m.client.DeleteTransfer(transferID); err != nil {
-							log.Printf("Failed to delete transfer for '%s': %v", state.Name, err)
-						}
-					} else {
-						log.Printf("Keeping '%s' on Put.io for seeding", state.Name)
-					}
-				} else {
-					log.Printf("Some files for '%s' are missing or have incorrect sizes, keeping on Put.io", state.Name)
-				}
-			}
-		}
-	}
-}
-
 // downloadFile downloads a file from Put.io to the target directory
 func (m *Manager) downloadFile(state *DownloadState) error {
 	ctx, cancel := m.setupDownloadContext()
 	defer cancel()
-	defer m.setupTransferCleanup(state)()
 
 	url, err := m.client.GetDownloadURL(state.FileID)
 	if err != nil {
@@ -195,7 +103,7 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	defer func() {
 		err := tempFile.Close()
 		if err != nil {
-			log.Printf("Error closing temp file: %v", err)
+			// might have been closed by finalizeDownload
 		}
 	}()
 
@@ -223,7 +131,6 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 
 	if startOffset > 0 && resp.StatusCode == http.StatusOK {
 		// Server doesn't support range requests, start over
-		log.Printf("Server doesn't support range requests, starting download from beginning for %s", state.Name)
 		startOffset = 0
 		// Truncate the file since we're starting over
 		if err := tempFile.Truncate(0); err != nil {

@@ -24,7 +24,6 @@ type DownloadState struct {
 	TransferID   int64
 	FileID       int64
 	Name         string
-	Status       string
 	Progress     float64
 	ETA          time.Time
 	LastProgress time.Time

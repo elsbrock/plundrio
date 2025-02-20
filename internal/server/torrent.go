@@ -91,29 +91,6 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		if t.SaveParentID != s.cfg.FolderID {
 			continue
 		}
-
-		// For completed/seeding transfers, verify files and cleanup if needed
-		if t.Status == "COMPLETED" || t.Status == "SEEDING" {
-			verified, err := s.verifyTransferFiles(t)
-			if err != nil {
-				log.Printf("Failed to verify files for transfer %d: %v", t.ID, err)
-			} else if verified {
-				shouldDelete := t.Status == "COMPLETED" ||
-					(t.Status == "SEEDING" && s.cfg.DeleteBeforeCompleted)
-
-				if shouldDelete {
-					log.Printf("All files exist locally for '%s', cleaning up from Put.io", t.Name)
-					if err := s.client.DeleteFile(t.FileID); err != nil {
-						log.Printf("Failed to delete '%s' from Put.io: %v", t.Name, err)
-					}
-					if err := s.client.DeleteTransfer(t.ID); err != nil {
-						log.Printf("Failed to delete transfer for '%s': %v", t.Name, err)
-					}
-					continue // Skip adding to torrents list since it's deleted
-				}
-			}
-		}
-
 		status := s.mapPutioStatus(t.Status)
 		torrents = append(torrents, map[string]interface{}{
 			"id":           t.ID,

@@ -24,22 +24,25 @@ const (
 // of completed transfers. The manager uses a worker pool pattern to process
 // downloads efficiently while maintaining control over system resources.
 type Manager struct {
-	cfg         *config.Config
-	client      *api.Client
+	cfg    *config.Config
+	client *api.Client
+
 	active      sync.Map // map[int64]*DownloadState
 	activeFiles sync.Map // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
-	stopChan    chan struct{}
-	stopOnce    sync.Once
-	workerWg    sync.WaitGroup // tracks worker goroutines
-	monitorWg   sync.WaitGroup // tracks monitor goroutine
-	jobs        chan downloadJob
-	mu          sync.Mutex // protects job queueing
-	running     bool       // tracks if manager is running
+
+	stopChan chan struct{}
+	stopOnce sync.Once
+
+	workerWg  sync.WaitGroup // tracks worker goroutines
+	monitorWg sync.WaitGroup // tracks monitor goroutine
+
+	jobs    chan downloadJob
+	mu      sync.Mutex // protects job queueing
+	running bool       // tracks if manager is running
 
 	// Transfer tracking
-	transferFiles      map[int64]int    // Track total files per transfer
-	transferNames      map[int64]string // Track transfer names
-	completedTransfers map[int64]bool   // Track completed transfers
+	transferFiles      map[int64]int  // Track total files per transfer
+	completedTransfers map[int64]bool // Track completed transfers
 	transferMutex      sync.Mutex
 }
 
@@ -57,7 +60,6 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		jobs:               make(chan downloadJob, workerCount*downloadBufferMultiple),
 		activeFiles:        sync.Map{},
 		transferFiles:      make(map[int64]int),
-		transferNames:      make(map[int64]string),
 		completedTransfers: make(map[int64]bool),
 	}
 
@@ -87,15 +89,6 @@ func (m *Manager) Start() {
 	for i := 0; i < workerCount; i++ {
 		go m.downloadWorker()
 	}
-
-	// Repopulate transferFiles map from activeFiles with proper locking
-	m.transferMutex.Lock()
-	m.activeFiles.Range(func(key, value interface{}) bool {
-		transferID := value.(int64)
-		m.transferFiles[transferID]++
-		return true
-	})
-	m.transferMutex.Unlock()
 
 	// Start transfer monitor
 	go func() {
@@ -130,23 +123,6 @@ func (m *Manager) Stop() {
 	close(m.jobs)
 	// Wait for monitor to finish
 	m.monitorWg.Wait()
-}
-
-// markTransferCompleted safely marks a transfer as completed
-func (m *Manager) markTransferCompleted(transferID int64) {
-	m.transferMutex.Lock()
-	defer m.transferMutex.Unlock()
-	m.completedTransfers[transferID] = true
-}
-
-// handleFileCompletion updates transfer state when a file finishes
-func (m *Manager) handleFileCompletion(transferID int64) {
-	m.transferMutex.Lock()
-	defer m.transferMutex.Unlock()
-
-	if count, exists := m.transferFiles[transferID]; exists && count > 0 {
-		m.transferFiles[transferID]--
-	}
 }
 
 // QueueDownload adds a download job to the queue if not already downloading
