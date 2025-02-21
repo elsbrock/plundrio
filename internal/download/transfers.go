@@ -142,16 +142,25 @@ func (m *Manager) checkTransfers() {
 
 	// Process ready transfers
 	for _, transfer := range readyTransfers {
-		// Check if we're already handling it
-		if _, exists := m.active.Load(transfer.ID); exists {
-			continue
+		select {
+		case <-m.stopChan:
+			return // Exit if shutting down
+		default:
+			// Check if we're already handling it
+			if _, exists := m.active.Load(transfer.ID); exists {
+				continue
+			}
+
+			log.Printf("Found ready transfer '%s' (status: %s)", transfer.Name, transfer.Status)
+
+			// Safely increment worker count before starting goroutine
+			m.workerWg.Add(1)
+			// Create a copy of the transfer for the goroutine
+			transferCopy := *transfer
+			go func() {
+				m.processTransfer(&transferCopy)
+			}()
 		}
-
-		log.Printf("Found ready transfer '%s' (status: %s)", transfer.Name, transfer.Status)
-
-		// Trigger download
-		m.workerWg.Add(1)
-		go m.processTransfer(transfer)
 	}
 
 	// Display errored transfers, then delete

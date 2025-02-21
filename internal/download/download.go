@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -113,21 +114,38 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	progressTicker := time.NewTicker(progressUpdateInterval)
 	defer progressTicker.Stop()
 
-	// Create done channel for progress goroutine
+	// Create done channel for progress goroutine and copyDone for io.Copy completion
 	done := make(chan struct{})
-	defer close(done)
+	copyDone := make(chan error, 1)
+	downloadCtx, downloadCancel := context.WithCancel(ctx)
+
+	// Single deferred cleanup function using once
+	var once sync.Once
+	defer func() {
+		downloadCancel() // Cancel context in all cases
+		once.Do(func() {
+			// Safe close of both channels
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+			select {
+			case <-copyDone:
+			default:
+				close(copyDone)
+			}
+		})
+	}()
 
 	reader := m.setupProgressTracking(state, resp.Body, &downloaded, totalSize)
-
 	m.monitorDownloadProgress(ctx, state, reader, totalSize, &downloaded, done, progressTicker)
 	m.monitorDownloadStall(ctx, state, &downloaded, totalSize, cancel)
 
-	// Create a pipe to allow cancellation of io.Copy
-	pr, pw := io.Pipe()
-	copyDone := make(chan error, 1)
-
 	// Start copying in a goroutine
 	go func() {
+		// Use resp.Body.Close to interrupt the copy operation
+		defer resp.Body.Close()
 		_, err := io.Copy(tempFile, reader)
 		if err != nil {
 			log.Printf("Copy error for %s: %v", state.Name, err)
@@ -144,10 +162,14 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 			return fmt.Errorf("download failed: %w", err)
 		}
 		return m.finalizeDownload(state, reader, tempFile, tempPath, targetPath, totalSize)
-	case <-ctx.Done():
-		// Clean up on cancellation
-		pr.Close()
-		pw.Close()
+	case <-downloadCtx.Done():
+		// The deferred close of resp.Body will interrupt the copy
+		// Wait for copy goroutine to complete
+		select {
+		case <-copyDone:
+		case <-time.After(5 * time.Second):
+			log.Printf("Warning: Copy operation did not complete within timeout for %s", state.Name)
+		}
 		return fmt.Errorf("download cancelled")
 	}
 }

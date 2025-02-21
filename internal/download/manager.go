@@ -87,19 +87,19 @@ func (m *Manager) Start() {
 
 	// Start download workers with proper synchronization
 	for i := 0; i < workerCount; i++ {
+		m.workerWg.Add(1)
 		go func() {
 			defer m.workerWg.Done()
 			m.downloadWorker()
 		}()
-		m.workerWg.Add(1)
 	}
 
 	// Start transfer monitor
+	m.monitorWg.Add(1)
 	go func() {
 		defer m.monitorWg.Done()
 		m.monitorTransfers()
 	}()
-	m.monitorWg.Add(1)
 }
 
 // Stop gracefully shuts down the manager
@@ -113,7 +113,10 @@ func (m *Manager) Stop() {
 	m.mu.Unlock()
 
 	m.stopOnce.Do(func() {
+		// Signal workers to stop via stopChan
 		close(m.stopChan)
+		// Close jobs channel to prevent new submissions
+		close(m.jobs)
 		// Drain any remaining jobs to prevent deadlock
 		go func() {
 			for range m.jobs {
@@ -124,8 +127,6 @@ func (m *Manager) Stop() {
 
 	// Wait for all workers to finish
 	m.workerWg.Wait()
-	// Close jobs channel after workers are done
-	close(m.jobs)
 	// Wait for monitor to finish
 	m.monitorWg.Wait()
 }
