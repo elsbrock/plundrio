@@ -18,32 +18,20 @@ automatically added to put.io and downloaded to the local disk once complete.
 ## 🚀 Features
 
 - 🔄 Seamless integration with Sonarr, Radarr, and other *arr applications
-- ⚡ Fast and efficient downloads from put.io
-- 🎯 Automatic download management and organization
+  supporting Transmission RPC
+- Stateless; multiple instances per put.io account supported
+- ⚡ Fast and efficient downloads from put.io (with resume support)
 - 🛠️ Easy configuration and setup
-- 📊 Download progress monitoring
-- 🔃 Configurable parallel downloads
-- 🗑️ Flexible file deletion strategies
 
 ## 🔧 How It Works
 
-plundrio makes downloading from put.io simple and automatic:
+plundrio makes downloading from put.io simple and automatic: It tracks all
+put.io transfers pointing at the specified target directory. Once a transfer
+completes, it automatically downloads all files of that transfer to your
+local folder. Downloads are parallelized to optimize speed.
 
-1. **Automatic Downloads**:
-   - When your *arr apps (like Sonarr or Radarr) request new content, plundrio handles it automatically
-   - No need to manually download files from put.io anymore
-
-2. **Parallel Downloads**:
-   - Downloads multiple files at the same time
-   - You control how many downloads run simultaneously through configuration
-   - Efficiently uses your available bandwidth
-   - Each connection is limited to put.io's 20MB/s throttle
-
-3. **File Management**:
-   - Keeps track of what's already downloaded
-   - Automatically downloads any missing files
-   - Makes sure your download folder stays organized
-   - Configurable deletion strategies for completed downloads
+Transfers and their files are cleaned up when all files are present locally
+and the transfer finished seeding.
 
 ## 📦 Installation
 
