@@ -6,15 +6,11 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 )
 
 // downloadWorker processes download jobs from the queue
 func (m *Manager) downloadWorker() {
-	defer m.workerWg.Done()
-
 	for {
 		select {
 		case <-m.stopChan:
@@ -24,52 +20,18 @@ func (m *Manager) downloadWorker() {
 				// Channel closed, exit worker
 				return
 			}
-			if job.IsFolder {
-				m.handleFolder(job)
+			state := &DownloadState{
+				FileID:     job.FileID,
+				Name:       job.Name,
+				TransferID: job.TransferID,
+			}
+			if err := m.downloadFile(state); err != nil {
+				log.Printf("Failed to download %s: %v", job.Name, err)
 			} else {
-				state := &DownloadState{
-					FileID: job.FileID,
-					Name:   job.Name,
-				}
-				if err := m.downloadFile(state); err != nil {
-					log.Printf("Failed to download %s: %v", job.Name, err)
-				}
+				// On successful download, update transfer completion state
+				m.handleFileCompletion(job.TransferID)
 			}
 		}
-	}
-}
-
-// handleFolder processes a folder and queues its contents for download
-func (m *Manager) handleFolder(job downloadJob) {
-	// Get folder contents
-	files, err := m.client.GetFiles(job.FileID)
-	if err != nil {
-		log.Printf("Failed to get folder contents for %s: %v", job.Name, err)
-		return
-	}
-
-	transfer, ok := m.active.Load(job.TransferID)
-	if !ok {
-		log.Printf("Failed to get transfer for %s: %v", job.Name, err)
-		return
-	}
-	transferName := transfer.(*DownloadState).Name
-
-	// Create the folder under transfer name
-	folderPath := filepath.Join(m.cfg.TargetDir, transferName, job.Name)
-	if err := os.MkdirAll(folderPath, 0755); err != nil {
-		log.Printf("Failed to create folder %s: %v", folderPath, err)
-		return
-	}
-
-	// Queue all files and subfolders
-	for _, file := range files {
-		subPath := filepath.Join(transferName, job.Name, file.Name)
-		m.QueueDownload(downloadJob{
-			FileID:   file.ID,
-			Name:     subPath,
-			IsFolder: file.IsDir(),
-		})
 	}
 }
 
@@ -129,6 +91,7 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return nil // No download of empty files
 	}
 
+	// Check if server supports range requests
 	if startOffset > 0 && resp.StatusCode == http.StatusOK {
 		// Server doesn't support range requests, start over
 		startOffset = 0

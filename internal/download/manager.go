@@ -19,6 +19,12 @@ const (
 	downloadBufferMultiple = 2 // Buffer size multiplier for download jobs channel
 )
 
+// TransferState tracks the progress of a transfer's downloads
+type TransferState struct {
+	totalFiles     int
+	completedFiles int
+}
+
 // Manager handles downloading completed transfers from Put.io.
 // It supports concurrent downloads, progress tracking, and automatic cleanup
 // of completed transfers. The manager uses a worker pool pattern to process
@@ -27,7 +33,7 @@ type Manager struct {
 	cfg    *config.Config
 	client *api.Client
 
-	active      sync.Map // map[int64]*DownloadState
+	active      sync.Map // map[int64]*DownloadState - tracks active transfers
 	activeFiles sync.Map // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
 
 	stopChan chan struct{}
@@ -41,9 +47,8 @@ type Manager struct {
 	running bool       // tracks if manager is running
 
 	// Transfer tracking
-	transferFiles      map[int64]int  // Track total files per transfer
-	completedTransfers map[int64]bool // Track completed transfers
-	transferMutex      sync.Mutex
+	transferStates map[int64]*TransferState // Track download progress per transfer
+	transferMutex  sync.Mutex
 }
 
 // New creates a new download manager
@@ -54,13 +59,12 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 	}
 
 	m := &Manager{
-		cfg:                cfg,
-		client:             client,
-		stopChan:           make(chan struct{}),
-		jobs:               make(chan downloadJob, workerCount*downloadBufferMultiple),
-		activeFiles:        sync.Map{},
-		transferFiles:      make(map[int64]int),
-		completedTransfers: make(map[int64]bool),
+		cfg:            cfg,
+		client:         client,
+		stopChan:       make(chan struct{}),
+		jobs:           make(chan downloadJob, workerCount*downloadBufferMultiple),
+		activeFiles:    sync.Map{},
+		transferStates: make(map[int64]*TransferState),
 	}
 
 	return m
@@ -81,13 +85,13 @@ func (m *Manager) Start() {
 		workerCount = 4
 	}
 
-	// Add to WaitGroup before starting goroutines
-	m.workerWg.Add(workerCount)
-	m.monitorWg.Add(1)
-
 	// Start download workers with proper synchronization
 	for i := 0; i < workerCount; i++ {
-		go m.downloadWorker()
+		go func() {
+			defer m.workerWg.Done()
+			m.downloadWorker()
+		}()
+		m.workerWg.Add(1)
 	}
 
 	// Start transfer monitor
@@ -95,6 +99,7 @@ func (m *Manager) Start() {
 		defer m.monitorWg.Done()
 		m.monitorTransfers()
 	}()
+	m.monitorWg.Add(1)
 }
 
 // Stop gracefully shuts down the manager
@@ -143,5 +148,15 @@ func (m *Manager) QueueDownload(job downloadJob) {
 	case <-m.stopChan:
 		// Manager is shutting down, remove from active files
 		m.activeFiles.Delete(job.FileID)
+
+		// Also clean up transfer state if needed
+		m.transferMutex.Lock()
+		if state, exists := m.transferStates[job.TransferID]; exists {
+			state.completedFiles++
+			if state.completedFiles >= state.totalFiles {
+				delete(m.transferStates, job.TransferID)
+			}
+		}
+		m.transferMutex.Unlock()
 	}
 }

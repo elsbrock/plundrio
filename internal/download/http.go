@@ -89,6 +89,9 @@ func (m *Manager) finalizeDownload(state *DownloadState, reader *progressReader,
 		return fmt.Errorf("failed to move file to target location: %w", err)
 	}
 
+	// Clean up tracking state
+	m.activeFiles.Delete(state.FileID)
+
 	elapsed := time.Since(reader.startTime).Seconds()
 	averageSpeedMBps := (float64(totalSize) / 1024 / 1024) / elapsed
 	log.Printf("Completed download of %s (%.2f MB) - Average speed: %.2f MB/s",

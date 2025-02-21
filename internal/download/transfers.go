@@ -10,6 +10,35 @@ import (
 	"github.com/putdotio/go-putio/putio"
 )
 
+// cleanupTransfer handles the deletion of a completed transfer and its source files
+func (m *Manager) cleanupTransfer(transferID int64) error {
+	// Get transfer state before cleanup
+	state, ok := m.active.Load(transferID)
+	if !ok {
+		return fmt.Errorf("transfer %d not found", transferID)
+	}
+	downloadState := state.(*DownloadState)
+
+	// Delete the source file first
+	if err := m.client.DeleteFile(downloadState.FileID); err != nil {
+		return fmt.Errorf("failed to delete source file: %w", err)
+	}
+
+	// Delete the transfer
+	if err := m.client.DeleteTransfer(transferID); err != nil {
+		return fmt.Errorf("failed to delete transfer: %w", err)
+	}
+
+	// Clean up our tracking state
+	m.active.Delete(transferID)
+	m.transferMutex.Lock()
+	delete(m.transferStates, transferID)
+	m.transferMutex.Unlock()
+
+	log.Printf("Cleaned up completed transfer '%s'", downloadState.Name)
+	return nil
+}
+
 // FindIncompleteDownloads checks for any incomplete downloads in the target directory
 func (m *Manager) FindIncompleteDownloads() ([]downloadJob, error) {
 	files, err := m.client.GetFiles(m.cfg.FolderID)
@@ -58,39 +87,52 @@ func (m *Manager) checkTransfers() {
 	}
 
 	// Count transfers in each status
-	var idle, downloading, seeding, completed, error int
+	var queued, waiting, preparing, downloading, completing, seeding, completed, error int
+
+	var readyTransfers []*putio.Transfer
+	var erroredTransfers []*putio.Transfer
 	var inProgressTransfers []*putio.Transfer
 
 	// Map of transfer IDs to their current status
 	currentStatus := make(map[int64]string)
 
 	for _, t := range transfers {
+		// Skip transfers not in our target folder
 		if t.SaveParentID != m.cfg.FolderID {
-			continue // Skip transfers not in our target folder
+			continue
 		}
 		currentStatus[t.ID] = t.Status
 		switch t.Status {
 		case "IN_QUEUE":
-			idle++
+			queued++
+		case "WAITING":
+			waiting++
+		case "PREPARING":
+			preparing++
 		case "DOWNLOADING":
 			downloading++
 			inProgressTransfers = append(inProgressTransfers, t)
+		case "COMPLETING":
+			completing++
 		case "SEEDING":
 			seeding++
+			readyTransfers = append(readyTransfers, t)
 		case "COMPLETED":
 			completed++
+			readyTransfers = append(readyTransfers, t)
 		case "ERROR":
 			error++
+			erroredTransfers = append(erroredTransfers, t)
 		}
 	}
 
 	// Log transfer counts
-	log.Printf("Transfers - Idle: %d, Downloading: %d, Seeding: %d, Completed: %d, Error: %d",
-		idle, downloading, seeding, completed, error)
+	log.Printf("Transfers - Queued: %d, Preparing: %d, Downloading: %d, Completing: %d, Seeding: %d, Completed: %d, Error: %d",
+		queued, preparing, downloading, completing, seeding, completed, error)
 
 	// Log details for in-progress transfers
 	for _, t := range inProgressTransfers {
-		log.Printf("Downloading: %s (%.1f%% of %.1fMB at %.1fMB/s, ETA: %s)",
+		log.Printf("- %s (%.1f%% of %.1fMB at %.1fMB/s, ETA: %s)",
 			t.Name,
 			float64(t.PercentDone),
 			float64(t.Size)/(1024*1024),
@@ -98,27 +140,46 @@ func (m *Manager) checkTransfers() {
 			formatETA(int(t.EstimatedTime)))
 	}
 
-	// Process new transfers
-	for _, transfer := range transfers {
-		// Skip transfers not in our target folder or already being processed
-		if transfer.SaveParentID != m.cfg.FolderID {
-			continue
-		}
+	// Process ready transfers
+	for _, transfer := range readyTransfers {
+		// Check if we're already handling it
 		if _, exists := m.active.Load(transfer.ID); exists {
 			continue
 		}
 
-		log.Printf("Found transfer '%s' (status: %s)", transfer.Name, transfer.Status)
+		log.Printf("Found ready transfer '%s' (status: %s)", transfer.Name, transfer.Status)
 
-		switch transfer.Status {
-		case "COMPLETED", "SEEDING":
-			m.workerWg.Add(1)
-			go m.processTransfer(transfer)
-		case "ERROR":
-			log.Printf("Transfer error: %s - %s", transfer.Name, transfer.ErrorMessage)
-			if err := m.client.DeleteTransfer(transfer.ID); err != nil {
-				log.Printf("Failed to delete failed transfer: %v", err)
-			}
+		// Trigger download
+		m.workerWg.Add(1)
+		go m.processTransfer(transfer)
+	}
+
+	// Display errored transfers, then delete
+	for _, transfer := range erroredTransfers {
+		log.Printf("Transfer '%s' errored: %s", transfer.Name, transfer.ErrorMessage)
+		if err := m.client.DeleteTransfer(transfer.ID); err != nil {
+			log.Printf("Failed to delete errored transfer: %v", err)
+		}
+	}
+}
+
+// handleFileCompletion updates transfer state when a file completes downloading
+func (m *Manager) handleFileCompletion(transferID int64) {
+	m.transferMutex.Lock()
+	defer m.transferMutex.Unlock()
+
+	tstate, exists := m.transferStates[transferID]
+	if !exists {
+		return
+	}
+
+	tstate.completedFiles++
+	log.Printf("Completed %d/%d files for transfer %d", tstate.completedFiles, tstate.totalFiles, transferID)
+
+	// If all files are done, clean up the transfer
+	if tstate.completedFiles >= tstate.totalFiles {
+		if err := m.cleanupTransfer(transferID); err != nil {
+			log.Printf("Failed to cleanup completed transfer: %v", err)
 		}
 	}
 }
@@ -146,6 +207,7 @@ func formatETA(seconds int) string {
 func (m *Manager) processTransfer(transfer *putio.Transfer) {
 	defer m.workerWg.Done()
 
+	// Store transfer state
 	state := &DownloadState{
 		TransferID: transfer.ID,
 		FileID:     transfer.FileID,
@@ -154,7 +216,7 @@ func (m *Manager) processTransfer(transfer *putio.Transfer) {
 	m.active.Store(transfer.ID, state)
 
 	// Get all files in the transfer
-	files, err := m.client.GetFiles(transfer.FileID)
+	files, err := m.client.GetAllTransferFiles(transfer.FileID)
 	if err != nil {
 		if putioErr, ok := err.(*putio.ErrorResponse); ok && putioErr.Type == "NotFound" {
 			log.Printf("Files of transfer '%s' no longer exists on Put.io, cleaning up", transfer.Name)
@@ -187,23 +249,21 @@ func (m *Manager) processTransfer(transfer *putio.Transfer) {
 		}
 	}
 
-	// Update transfer files count for tracking
+	// Initialize or update transfer state tracking
 	m.transferMutex.Lock()
-	m.transferFiles[transfer.ID] = filesToDownload
+	tstate := &TransferState{
+		totalFiles:     filesToDownload,
+		completedFiles: 0,
+	}
+	m.transferStates[transfer.ID] = tstate
+	m.transferMutex.Unlock()
+
 	if filesToDownload > 0 {
 		log.Printf("Queued %d files for download from transfer '%s'", filesToDownload, transfer.Name)
 	} else {
-		// if transfer is completed or deleteBeforeCompleted is set, we can delete
-		// it
-		if m.cfg.DeleteBeforeCompleted || transfer.Status == "COMPLETED" {
-			if err := m.client.DeleteFile(transfer.FileID); err != nil {
-				if err := m.client.DeleteTransfer(transfer.ID); err != nil {
-					log.Printf("Failed to delete transfer: %v", err)
-				}
-				m.active.Delete(transfer.ID)
-				log.Printf("Deleted transfer '%s'", transfer.Name)
-			}
+		// No files to download, clean up immediately
+		if err := m.cleanupTransfer(transfer.ID); err != nil {
+			log.Printf("Failed to cleanup transfer: %v", err)
 		}
 	}
-	m.transferMutex.Unlock()
 }

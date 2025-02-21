@@ -123,6 +123,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 	}
 
 	for _, id := range params.IDs {
+		// TODO: remove transfer file too
 		if err := s.client.DeleteTransfer(id); err != nil {
 			log.Printf("RPC: Failed to delete transfer %d: %v", id, err)
 		} else {
