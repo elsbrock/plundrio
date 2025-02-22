@@ -131,6 +131,22 @@ func (m *Manager) Stop() {
 	m.monitorWg.Wait()
 }
 
+// cleanupDownload removes tracking state for a download and updates transfer completion
+func (m *Manager) cleanupDownload(fileID, transferID int64) {
+	// Remove from active files
+	m.activeFiles.Delete(fileID)
+
+	// Update transfer state
+	m.transferMutex.Lock()
+	defer m.transferMutex.Unlock()
+	if state, exists := m.transferStates[transferID]; exists {
+		state.completedFiles++
+		if state.completedFiles >= state.totalFiles {
+			delete(m.transferStates, transferID)
+		}
+	}
+}
+
 // QueueDownload adds a download job to the queue if not already downloading
 func (m *Manager) QueueDownload(job downloadJob) {
 	m.mu.Lock()
@@ -147,17 +163,7 @@ func (m *Manager) QueueDownload(job downloadJob) {
 	case m.jobs <- job:
 		// Successfully queued
 	case <-m.stopChan:
-		// Manager is shutting down, remove from active files
-		m.activeFiles.Delete(job.FileID)
-
-		// Also clean up transfer state if needed
-		m.transferMutex.Lock()
-		if state, exists := m.transferStates[job.TransferID]; exists {
-			state.completedFiles++
-			if state.completedFiles >= state.totalFiles {
-				delete(m.transferStates, job.TransferID)
-			}
-		}
-		m.transferMutex.Unlock()
+		// Manager is shutting down, clean up
+		m.cleanupDownload(job.FileID, job.TransferID)
 	}
 }

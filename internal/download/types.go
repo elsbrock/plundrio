@@ -2,6 +2,7 @@ package download
 
 import (
 	"io"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,7 @@ type downloadJob struct {
 }
 
 // DownloadState tracks the progress of a file download
+// DownloadState tracks the progress of a file download
 type DownloadState struct {
 	TransferID   int64
 	FileID       int64
@@ -28,6 +30,10 @@ type DownloadState struct {
 	ETA          time.Time
 	LastProgress time.Time
 	StartTime    time.Time
+
+	// Mutex to protect access to downloaded bytes counter
+	mu         sync.Mutex
+	downloaded int64
 }
 
 // progressReader wraps an io.Reader to track download progress

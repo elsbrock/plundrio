@@ -28,6 +28,8 @@ func (m *Manager) downloadWorker() {
 			}
 			if err := m.downloadFile(state); err != nil {
 				log.Printf("Failed to download %s: %v", job.Name, err)
+				// Ensure cleanup on any download failure
+				m.cleanupDownload(job.FileID, job.TransferID)
 			} else {
 				// On successful download, update transfer completion state
 				m.handleFileCompletion(job.TransferID)
@@ -89,7 +91,9 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	// Set up progress tracking
 	totalSize := resp.ContentLength
 	if totalSize <= 0 {
-		return nil // No download of empty files
+		// Empty file, clean up and mark as completed
+		m.cleanupDownload(state.FileID, state.TransferID)
+		return nil
 	}
 
 	// Check if server supports range requests
@@ -108,7 +112,10 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		totalSize += startOffset
 	}
 
-	downloaded := startOffset // Start with existing bytes for progress calculation
+	// Initialize download state
+	state.mu.Lock()
+	state.downloaded = startOffset // Start with existing bytes for progress calculation
+	state.mu.Unlock()
 
 	// Create progress logging ticker
 	progressTicker := time.NewTicker(progressUpdateInterval)
@@ -138,9 +145,9 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		})
 	}()
 
-	reader := m.setupProgressTracking(state, resp.Body, &downloaded, totalSize)
-	m.monitorDownloadProgress(ctx, state, reader, totalSize, &downloaded, done, progressTicker)
-	m.monitorDownloadStall(ctx, state, &downloaded, totalSize, cancel)
+	reader := m.setupProgressTracking(state, resp.Body, totalSize)
+	m.monitorDownloadProgress(ctx, state, reader, totalSize, done, progressTicker)
+	m.monitorDownloadStall(ctx, state, totalSize, cancel)
 
 	// Start copying in a goroutine
 	go func() {
