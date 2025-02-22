@@ -21,8 +21,8 @@
 
             copyToRoot = pkgs.buildEnv {
               name = "image-root";
-              paths = [ plundrio ];
-              pathsToLink = [ "/bin" ];
+              paths = [ plundrio pkgs.cacert ];
+              pathsToLink = [ "/bin" "/etc/ssl" ];
             };
 
             config = {
@@ -30,16 +30,19 @@
               ExposedPorts = {
                 "9091/tcp" = {};
               };
+              Env = [
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              ];
             };
           };
 
           plundrio = pkgs.buildGoModule {
             pname = "plundrio";
-            version = "0.9.1";
+            version = "0.9.2";
             src = ./.;
 
             # Use the correct vendorHash provided by Nix
-            vendorHash = "sha256-0poj90E4qfG+XU1yzHddT/sKwu3jis1iD0OE22l9XYo=";
+            vendorHash = "sha256-Birx1gftA0vmdIYZClyyJC8QjF/NpcwQpbstksxq19U=";
             proxyVendor = true;
 
             # Specify the correct package path
