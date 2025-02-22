@@ -42,7 +42,7 @@
             src = ./.;
 
             # Use the correct vendorHash provided by Nix
-            vendorHash = "sha256-Birx1gftA0vmdIYZClyyJC8QjF/NpcwQpbstksxq19U=";
+            vendorHash = "sha256-z7GGZ0j9DGuB14IYRGU2KqihL639d+7FplPtUGTRHsY=";
             proxyVendor = true;
 
             # Specify the correct package path
