@@ -38,7 +38,7 @@
 
           plundrio = pkgs.buildGoModule {
             pname = "plundrio";
-            version = "0.9.2";
+            version = "0.9.3";
             src = ./.;
 
             # Use the correct vendorHash provided by Nix
