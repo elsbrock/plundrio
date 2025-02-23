@@ -51,7 +51,7 @@ Make sure to expose the transmission RPC port (default 9091) and mount the downl
 
 ### From Releases
 
-Download the latest binary for your platform from the [releases page](https://github.com/elsbrock/plundrio/releases).
+Download the latest binary for your platform from the [releases page](https://github.com/elsbrock/plundrio/releases). We provide packages and Docker images for both x86_64-linux and aarch64-linux platforms.
 
 ## 💡 Tips
 
