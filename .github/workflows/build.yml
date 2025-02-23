@@ -8,12 +8,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            pkg: plundrio
+          - arch: aarch64
+            pkg: plundrio-aarch64
+          - arch: x86_64
+            pkg: plundrio-docker
+          - arch: aarch64
+            pkg: plundrio-docker-aarch64
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
-      - name: Build package
-        run: nix build .#plundrio
-      - name: Build docker image
-        run: nix build .#plundrio-docker
+      - name: Build ${{ matrix.pkg }}
+        run: nix build .#${{ matrix.pkg }}

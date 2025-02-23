@@ -18,9 +18,14 @@ import (
 	"github.com/spf13/viper"
 )
 
+var (
+	version = "dev"
+)
+
 var rootCmd = &cobra.Command{
-	Use:   "plundrio",
-	Short: "Put.io automation tool",
+	Use:     "plundrio",
+	Short:   "Put.io automation tool",
+	Version: version,
 }
 
 var runCmd = &cobra.Command{

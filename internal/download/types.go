@@ -21,7 +21,6 @@ type downloadJob struct {
 }
 
 // DownloadState tracks the progress of a file download
-// DownloadState tracks the progress of a file download
 type DownloadState struct {
 	TransferID   int64
 	FileID       int64
@@ -44,6 +43,7 @@ type progressReader struct {
 	initialBytes int64
 }
 
+// Read implements io.Reader for progressReader
 func (r *progressReader) Read(p []byte) (n int, err error) {
 	n, err = r.reader.Read(p)
 	if n > 0 && r.onProgress != nil {

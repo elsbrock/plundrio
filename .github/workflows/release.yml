@@ -5,40 +5,91 @@ on:
     types: [published]
 
 jobs:
-  release:
-    name: Release Build
+  binaries:
+    name: Release Binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     if: github.event_name == 'release'
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            pkg: plundrio
+            suffix: x86_64-linux
+          - arch: aarch64
+            pkg: plundrio-aarch64
+            suffix: aarch64-linux
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
 
-      - name: Build binary
-        run: nix build .#plundrio
+      - name: Build ${{ matrix.arch }} binary
+        run: nix build .#${{ matrix.pkg }}
 
-      - name: Upload binary artifact
+      - name: Upload ${{ matrix.arch }} binary
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: ./result/bin/plundrio
-          asset_name: plundrio_${{ github.event.release.tag_name }}.x86_64-linux
+          asset_name: plundrio_${{ github.event.release.tag_name }}.${{ matrix.suffix }}
           asset_content_type: application/octet-stream
 
-      - name: Build Docker image
-        run: nix build .#plundrio-docker
+  docker:
+    name: Release Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    if: github.event_name == 'release'
+    needs: binaries
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            pkg: plundrio-docker
+          - arch: aarch64
+            pkg: plundrio-docker-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
 
-      - name: Load and push Docker image
+      - name: Build ${{ matrix.arch }} Docker image
+        run: nix build .#${{ matrix.pkg }}
+
+      - name: Push ${{ matrix.arch }} Docker image
         run: |
           docker load < result
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
-          docker push ghcr.io/${{ github.repository }}:latest
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
-          docker push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
+          docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+          docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+
+  manifests:
+    name: Create Multi-arch Manifests
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    if: github.event_name == 'release'
+    needs: docker
+    steps:
+      - name: Login to GitHub Container Registry
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create and push Docker manifests
+        run: |
+          docker manifest create ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:x86_64-latest \
+            ghcr.io/${{ github.repository }}:aarch64-latest
+          docker manifest push ghcr.io/${{ github.repository }}:latest
+
+          docker manifest create ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }} \
+            ghcr.io/${{ github.repository }}:x86_64-${{ github.event.release.tag_name }} \
+            ghcr.io/${{ github.repository }}:aarch64-${{ github.event.release.tag_name }}
+          docker manifest push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}

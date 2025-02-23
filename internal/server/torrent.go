@@ -4,11 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
-
-	"github.com/putdotio/go-putio/putio"
 )
 
 // handleTorrentAdd processes torrent-add requests
@@ -48,33 +44,6 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 			"hashString": "",
 		},
 	}, nil
-}
-
-// verifyTransferFiles checks if all files in a transfer exist locally with matching sizes
-func (s *Server) verifyTransferFiles(transfer *putio.Transfer) (bool, error) {
-	// Get all files in the transfer
-	files, err := s.client.GetAllTransferFiles(transfer.FileID)
-	if err != nil {
-		return false, fmt.Errorf("failed to get transfer files: %w", err)
-	}
-
-	// Check each file exists locally with matching size
-	for _, file := range files {
-		localPath := filepath.Join(s.cfg.TargetDir, file.Name)
-		info, err := os.Stat(localPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return false, nil // File doesn't exist
-			}
-			return false, fmt.Errorf("failed to check local file: %w", err)
-		}
-
-		if info.Size() != file.Size {
-			return false, nil // Size mismatch
-		}
-	}
-
-	return true, nil // All files exist with matching sizes
 }
 
 // handleTorrentGet processes torrent-get requests

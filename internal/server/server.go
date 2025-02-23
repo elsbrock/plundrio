@@ -3,8 +3,9 @@ package server
 import (
 	"log"
 	"net/http"
-	"sync"
 	"time"
+
+	_ "net/http/pprof"
 
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
@@ -16,7 +17,6 @@ type Server struct {
 	cfg          *config.Config
 	client       *api.Client
 	srv          *http.Server
-	transfers    sync.Map // map[string]*putio.Transfer - magnet hash to transfer
 	quotaTicker  *time.Ticker
 	stopChan     chan struct{}
 	dlManager    *download.Manager
@@ -26,26 +26,23 @@ type Server struct {
 // New creates a new RPC server
 func New(cfg *config.Config, client *api.Client, dlManager *download.Manager) *Server {
 	return &Server{
-		cfg:       cfg,
-		client:    client,
-		stopChan:  make(chan struct{}),
-		dlManager: dlManager,
+		cfg:         cfg,
+		client:      client,
+		stopChan:    make(chan struct{}),
+		dlManager:   dlManager,
+		quotaTicker: time.NewTicker(15 * time.Minute),
 	}
 }
 
 // Start begins listening for RPC requests
 func (s *Server) Start() error {
-	// Check for incomplete downloads
-	incompleteDownloads, err := s.dlManager.FindIncompleteDownloads()
-	if err != nil {
-		log.Printf("Warning: Failed to check for incomplete downloads: %v", err)
-	} else if len(incompleteDownloads) > 0 {
-		log.Printf("Found %d incomplete downloads to resume", len(incompleteDownloads))
-		// Queue incomplete downloads for resumption
-		for _, job := range incompleteDownloads {
-			// Queue the job for processing by download workers
-			s.dlManager.QueueDownload(job)
-		}
+	// Initialize server first
+	mux := http.NewServeMux()
+	mux.HandleFunc("/transmission/rpc", s.handleRPC)
+
+	s.srv = &http.Server{
+		Addr:    s.cfg.ListenAddr,
+		Handler: mux,
 	}
 
 	// Get and log account info
@@ -60,14 +57,6 @@ func (s *Server) Start() error {
 			account.Disk.Avail/1024/1024)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/transmission/rpc", s.handleRPC)
-
-	s.srv = &http.Server{
-		Addr:    s.cfg.ListenAddr,
-		Handler: mux,
-	}
-
 	// Check initial disk quota
 	if overQuota, err := s.checkDiskQuota(); err != nil {
 		log.Printf("Warning: Failed to check initial disk quota: %v", err)
@@ -75,8 +64,7 @@ func (s *Server) Start() error {
 		log.Printf("Warning: Put.io account is over quota on startup")
 	}
 
-	// Start quota monitoring (every 15 minutes)
-	s.quotaTicker = time.NewTicker(15 * time.Minute)
+	// Start quota monitoring
 	go func() {
 		for {
 			select {
@@ -96,16 +84,11 @@ func (s *Server) Start() error {
 
 // Stop gracefully shuts down the server
 func (s *Server) Stop() error {
-	// Stop quota monitoring
-	if s.quotaTicker != nil {
-		s.quotaTicker.Stop()
-	}
+	s.quotaTicker.Stop()
 	close(s.stopChan)
 
 	// Stop the download manager
-	if s.dlManager != nil {
-		s.dlManager.Stop()
-	}
+	s.dlManager.Stop()
 
 	if s.srv != nil {
 		return s.srv.Close()
