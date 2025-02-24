@@ -119,7 +119,8 @@ func (m *Manager) checkTransfers() {
 
 // processTransfer handles downloading of a completed or seeding transfer
 func (m *Manager) processTransfer(transfer *putio.Transfer) {
-	defer m.workerWg.Done()
+	// Note: We don't defer m.workerWg.Done() here because we need to wait for all
+	// queued downloads to complete before decrementing the counter
 
 	// Store transfer state
 	m.active.Store(transfer.ID, &DownloadState{
@@ -175,11 +176,14 @@ func (m *Manager) processTransfer(transfer *putio.Transfer) {
 
 	if filesToDownload > 0 {
 		log.Printf("Queued %d files for download from transfer '%s'", filesToDownload, transfer.Name)
+		// We'll let handleFileCompletion decrement the workerWg when all files are done
 	} else {
-		// No files to download, clean up immediately
+		// No files to download, clean up immediately and decrement workerWg
 		if err := m.cleanupTransfer(transfer.ID); err != nil {
 			log.Printf("Failed to cleanup transfer: %v", err)
 		}
+		// Since no downloads were queued, we can safely decrement the counter here
+		m.workerWg.Done()
 	}
 }
 
@@ -229,12 +233,14 @@ func (m *Manager) handleFileCompletion(transferID int64) {
 	}
 
 	tstate.completedFiles++
-	log.Printf("Completed %d/%d files for transfer %", tstate.completedFiles, tstate.totalFiles, downloadState.Name)
+	log.Printf("Completed %d/%d files for transfer '%s'", tstate.completedFiles, tstate.totalFiles, downloadState.Name)
 
-	// If all files are done, clean up the transfer
+	// If all files are done, clean up the transfer and decrement the worker wait group
 	if tstate.completedFiles >= tstate.totalFiles {
 		if err := m.cleanupTransfer(transferID); err != nil {
 			log.Printf("Failed to cleanup completed transfer: %v", err)
 		}
+		// Now that all downloads for this transfer are complete, we can decrement the worker wait group
+		m.workerWg.Done()
 	}
 }
