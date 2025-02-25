@@ -1,40 +1,24 @@
-// Package download provides functionality for managing downloads from Put.io.
-// It handles concurrent downloads, progress tracking, and cleanup of completed transfers.
 package download
 
 import (
 	"sync"
-	"time"
 
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
+	"github.com/elsbrock/plundrio/internal/log"
 )
-
-const (
-	defaultWorkerCount     = 4
-	progressUpdateInterval = 5 * time.Second
-	downloadStallTimeout   = 1 * time.Minute
-	downloadHeaderTimeout  = 30 * time.Second
-	idleConnectionTimeout  = 60 * time.Second
-	downloadBufferMultiple = 2 // Buffer size multiplier for download jobs channel
-)
-
-// TransferState tracks the progress of a transfer's downloads
-type TransferState struct {
-	totalFiles     int
-	completedFiles int
-}
 
 // Manager handles downloading completed transfers from Put.io.
 // It supports concurrent downloads, progress tracking, and automatic cleanup
 // of completed transfers. The manager uses a worker pool pattern to process
 // downloads efficiently while maintaining control over system resources.
 type Manager struct {
-	cfg    *config.Config
-	client *api.Client
+	cfg      *config.Config
+	client   *api.Client
+	dlConfig *DownloadConfig // Download-specific configuration
 
-	active      sync.Map // map[int64]*DownloadState - tracks active transfers
-	activeFiles sync.Map // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
+	coordinator *TransferCoordinator // Coordinates transfer lifecycle
+	activeFiles sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
 
 	stopChan chan struct{}
 	stopOnce sync.Once
@@ -45,27 +29,58 @@ type Manager struct {
 	jobs    chan downloadJob
 	mu      sync.Mutex // protects job queueing
 	running bool       // tracks if manager is running
-
-	// Transfer tracking
-	transferStates map[int64]*TransferState // Track download progress per transfer
-	transferMutex  sync.Mutex
 }
 
 // New creates a new download manager
 func New(cfg *config.Config, client *api.Client) *Manager {
+	// Get default download configuration
+	dlConfig := GetDefaultConfig()
+
+	// Override with user config if provided
 	workerCount := cfg.WorkerCount
 	if workerCount <= 0 {
-		workerCount = defaultWorkerCount
+		workerCount = dlConfig.DefaultWorkerCount
 	}
 
 	m := &Manager{
-		cfg:            cfg,
-		client:         client,
-		stopChan:       make(chan struct{}),
-		jobs:           make(chan downloadJob, workerCount*downloadBufferMultiple),
-		activeFiles:    sync.Map{},
-		transferStates: make(map[int64]*TransferState),
+		cfg:         cfg,
+		client:      client,
+		dlConfig:    dlConfig,
+		stopChan:    make(chan struct{}),
+		jobs:        make(chan downloadJob, workerCount*dlConfig.BufferMultiple),
+		activeFiles: sync.Map{},
 	}
+
+	// Initialize coordinator
+	m.coordinator = NewTransferCoordinator(m)
+
+	// Register cleanup hooks
+	m.coordinator.RegisterCleanupHook(func(transferID int64) error {
+		state, ok := m.coordinator.getTransferContext(transferID)
+		if !ok {
+			return NewTransferNotFoundError(transferID)
+		}
+
+		// Delete source file and transfer from Put.io
+		if err := m.client.DeleteFile(state.FileID); err != nil {
+			log.Error("cleanup").
+				Int64("transfer_id", transferID).
+				Int64("file_id", state.FileID).
+				Err(err).
+				Msg("Failed to delete source file")
+			return err
+		}
+
+		if err := m.client.DeleteTransfer(transferID); err != nil {
+			log.Error("cleanup").
+				Int64("transfer_id", transferID).
+				Err(err).
+				Msg("Failed to delete transfer")
+			return err
+		}
+
+		return nil
+	})
 
 	return m
 }
@@ -82,7 +97,7 @@ func (m *Manager) Start() {
 
 	workerCount := m.cfg.WorkerCount
 	if workerCount <= 0 {
-		workerCount = 4
+		workerCount = m.dlConfig.DefaultWorkerCount
 	}
 
 	// Start download workers with proper synchronization
@@ -136,14 +151,10 @@ func (m *Manager) cleanupDownload(fileID, transferID int64) {
 	// Remove from active files
 	m.activeFiles.Delete(fileID)
 
-	// Update transfer state
-	m.transferMutex.Lock()
-	defer m.transferMutex.Unlock()
-	if state, exists := m.transferStates[transferID]; exists {
-		state.completedFiles++
-		if state.completedFiles >= state.totalFiles {
-			delete(m.transferStates, transferID)
-		}
+	// Update transfer completion state via coordinator
+	if err := m.coordinator.FileCompleted(transferID); err != nil {
+		// Error is already logged by coordinator
+		return
 	}
 }
 
@@ -163,7 +174,48 @@ func (m *Manager) QueueDownload(job downloadJob) {
 	case m.jobs <- job:
 		// Successfully queued
 	case <-m.stopChan:
-		// Manager is shutting down, clean up
-		m.cleanupDownload(job.FileID, job.TransferID)
+		// Manager is shutting down, just remove from active files
+		m.activeFiles.Delete(job.FileID)
+	}
+}
+
+// cleanupTransfer handles the deletion of a completed transfer and its source files
+func (m *Manager) cleanupTransfer(transferID int64) {
+	// Get transfer state before cleanup
+	ctx, ok := m.coordinator.getTransferContext(transferID)
+	if !ok {
+		log.Error("transfers").
+			Int64("id", transferID).
+			Msg("Transfer not found during cleanup")
+		return
+	}
+
+	log.Debug("transfers").
+		Str("name", ctx.Name).
+		Int64("id", transferID).
+		Int64("file_id", ctx.FileID).
+		Msg("Cleaning up transfer")
+
+	// Complete the transfer in the coordinator, which will run cleanup hooks
+	if err := m.coordinator.CompleteTransfer(transferID); err != nil {
+		log.Error("cleanup").
+			Int64("transfer_id", transferID).
+			Err(err).
+			Msg("Failed to complete transfer")
+	}
+
+	log.Info("transfers").
+		Str("name", ctx.Name).
+		Int64("id", transferID).
+		Msg("Cleaned up transfer")
+}
+
+// handleFileCompletion updates transfer state when a file completes downloading
+func (m *Manager) handleFileCompletion(transferID int64) {
+	if err := m.coordinator.FileCompleted(transferID); err != nil {
+		log.Error("transfers").
+			Int64("transfer_id", transferID).
+			Err(err).
+			Msg("Failed to handle file completion")
 	}
 }

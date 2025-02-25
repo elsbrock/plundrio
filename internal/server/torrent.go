@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
+
+	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // handleTorrentAdd processes torrent-add requests
@@ -19,28 +21,59 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	// Get magnet link from either magnetLink or filename field
-	var magnetLink string
-	if params.MagnetLink != "" {
-		magnetLink = params.MagnetLink
-	} else if params.Filename != "" && strings.HasPrefix(params.Filename, "magnet:") {
-		magnetLink = params.Filename
+	var name string
+
+	// Handle .torrent file upload if metainfo is provided
+	if params.MetaInfo != "" {
+		// Decode base64 torrent data
+		torrentData, err := base64.StdEncoding.DecodeString(params.MetaInfo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode torrent data: %w", err)
+		}
+
+		// Upload torrent file to Put.io
+		name = params.Filename
+		if name == "" {
+			name = "unknown.torrent"
+		}
+		if err := s.client.UploadFile(torrentData, name, s.cfg.FolderID); err != nil {
+			return nil, fmt.Errorf("failed to upload torrent: %w", err)
+		}
+
+		log.Info("rpc").
+			Str("operation", "torrent-add").
+			Str("type", "torrent").
+			Str("name", name).
+			Int64("folder_id", s.cfg.FolderID).
+			Msg("Torrent file uploaded")
 	} else {
-		return nil, fmt.Errorf("only magnet links are supported")
-	}
+		// Handle magnet links
+		if params.MagnetLink != "" {
+			name = params.MagnetLink
+		} else if params.Filename != "" && strings.HasPrefix(params.Filename, "magnet:") {
+			name = params.Filename
+		} else {
+			return nil, fmt.Errorf("invalid torrent or magnet link provided")
+		}
 
-	// Add transfer to Put.io
-	if err := s.client.AddTransfer(magnetLink, s.cfg.FolderID); err != nil {
-		return nil, fmt.Errorf("failed to add transfer: %w", err)
-	}
+		// Add magnet link to Put.io
+		if err := s.client.AddTransfer(name, s.cfg.FolderID); err != nil {
+			return nil, fmt.Errorf("failed to add transfer: %w", err)
+		}
 
-	log.Printf("RPC: torrent added")
+		log.Info("rpc").
+			Str("operation", "torrent-add").
+			Str("type", "magnet").
+			Str("magnet", name).
+			Int64("folder_id", s.cfg.FolderID).
+			Msg("Magnet link added")
+	}
 
 	// Return success response
 	return map[string]interface{}{
 		"torrent-added": map[string]interface{}{
 			"id":         0, // Put.io doesn't use transmission IDs
-			"name":       magnetLink,
+			"name":       name,
 			"hashString": "",
 		},
 	}, nil
@@ -68,8 +101,8 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"downloadDir":  s.cfg.TargetDir,
 			"percentDone":  float64(t.PercentDone) / 100.0,
 			"rateDownload": t.DownloadSpeed,
-			"rateUpload":   0, // Put.io doesn't provide upload speed
-			"uploadRatio":  0, // Put.io doesn't provide ratio
+			"rateUpload":   t.UploadSpeed,
+			"uploadRatio":  float64(t.Uploaded) / float64(t.Size),
 			"error":        t.ErrorMessage != "",
 			"errorString":  t.ErrorMessage,
 		})
@@ -92,15 +125,20 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 	}
 
 	for _, id := range params.IDs {
-		// TODO: remove transfer file too
 		if err := s.client.DeleteTransfer(id); err != nil {
-			log.Printf("RPC: Failed to delete transfer %d: %v", id, err)
+			log.Error("rpc").
+				Str("operation", "torrent-remove").
+				Int64("transfer_id", id).
+				Err(err).
+				Msg("Failed to delete transfer")
 		} else {
-			log.Printf("RPC: Removed torrent with ID %d", id)
+			log.Info("rpc").
+				Str("operation", "torrent-remove").
+				Int64("transfer_id", id).
+				Bool("delete_local_data", params.DeleteLocalData).
+				Msg("Transfer removed")
 		}
 	}
-
-	log.Printf("RPC: torrent removed")
 
 	return struct{}{}, nil
 }

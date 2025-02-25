@@ -6,12 +6,6 @@ import (
 	"time"
 )
 
-// ErrDownloadStalled is returned when a download makes no progress for too long
-type ErrDownloadStalled struct {
-	Filename string
-	Duration time.Duration
-}
-
 // downloadJob represents a single download task
 type downloadJob struct {
 	FileID     int64
@@ -50,4 +44,45 @@ func (r *progressReader) Read(p []byte) (n int, err error) {
 		r.onProgress(int64(n))
 	}
 	return
+}
+
+// TransferLifecycleState represents the possible states of a transfer
+type TransferLifecycleState int32
+
+const (
+	TransferLifecycleInitial TransferLifecycleState = iota
+	TransferLifecycleDownloading
+	TransferLifecycleCompleted
+	TransferLifecycleFailed
+	TransferLifecycleCancelled
+)
+
+// String returns a string representation of the transfer state
+func (s TransferLifecycleState) String() string {
+	switch s {
+	case TransferLifecycleInitial:
+		return "Initial"
+	case TransferLifecycleDownloading:
+		return "Downloading"
+	case TransferLifecycleCompleted:
+		return "Completed"
+	case TransferLifecycleFailed:
+		return "Failed"
+	case TransferLifecycleCancelled:
+		return "Cancelled"
+	default:
+		return "Unknown"
+	}
+}
+
+// TransferContext tracks the complete state of a transfer
+type TransferContext struct {
+	ID             int64
+	Name           string
+	FileID         int64
+	TotalFiles     int32
+	CompletedFiles int32
+	State          TransferLifecycleState
+	Error          error
+	mu             sync.RWMutex
 }

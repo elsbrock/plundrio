@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -145,8 +146,30 @@ func (c *Client) DeleteFile(fileID int64) error {
 	return nil
 }
 
+// UploadFile uploads a torrent file to Put.io
+func (c *Client) UploadFile(data []byte, filename string, folderID int64) error {
+	reader := bytes.NewReader(data)
+	_, err := c.client.Files.Upload(c.ctx, reader, filename, folderID)
+	if err != nil {
+		return fmt.Errorf("failed to upload file: %w", err)
+	}
+	return nil
+}
+
 // GetAllTransferFiles recursively gets all files in a transfer
 func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
+	// First check if the fileID is a file itself
+	file, err := c.client.Files.Get(c.ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+
+	// If it's a single file, return it directly
+	if !file.IsDir() {
+		return []*putio.File{&file}, nil
+	}
+
+	// Otherwise, recursively get all files in the directory
 	var allFiles []*putio.File
 	var getFiles func(id int64) error
 

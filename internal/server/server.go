@@ -1,7 +1,6 @@
 package server
 
 import (
-	"log"
 	"net/http"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
 	"github.com/elsbrock/plundrio/internal/download"
+	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // Server handles transmission-rpc requests
@@ -48,20 +48,21 @@ func (s *Server) Start() error {
 	// Get and log account info
 	account, err := s.client.GetAccountInfo()
 	if err != nil {
-		log.Printf("Warning: Failed to get account info: %v", err)
+		log.Warn("server").Err(err).Msg("Failed to get account info")
 	} else {
-		log.Printf("Put.io Account: %s", account.Username)
-		log.Printf("Storage: %d MB used / %d MB total (Available: %d MB)",
-			account.Disk.Used/1024/1024,
-			account.Disk.Size/1024/1024,
-			account.Disk.Avail/1024/1024)
+		log.Info("server").
+			Str("username", account.Username).
+			Int64("storage_used_mb", account.Disk.Used/1024/1024).
+			Int64("storage_total_mb", account.Disk.Size/1024/1024).
+			Int64("storage_available_mb", account.Disk.Avail/1024/1024).
+			Msg("Put.io account status")
 	}
 
 	// Check initial disk quota
 	if overQuota, err := s.checkDiskQuota(); err != nil {
-		log.Printf("Warning: Failed to check initial disk quota: %v", err)
+		log.Warn("server").Err(err).Msg("Failed to check initial disk quota")
 	} else if overQuota {
-		log.Printf("Warning: Put.io account is over quota on startup")
+		log.Warn("server").Msg("Put.io account is over quota on startup")
 	}
 
 	// Start quota monitoring
@@ -70,7 +71,7 @@ func (s *Server) Start() error {
 			select {
 			case <-s.quotaTicker.C:
 				if _, err := s.checkDiskQuota(); err != nil {
-					log.Printf("Failed to check disk quota: %v", err)
+					log.Error("server").Err(err).Msg("Failed to check disk quota")
 				}
 			case <-s.stopChan:
 				return
@@ -78,7 +79,7 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	log.Printf("Starting transmission-rpc server on %s", s.cfg.ListenAddr)
+	log.Info("server").Str("addr", s.cfg.ListenAddr).Msg("Starting transmission-rpc server")
 	return s.srv.ListenAndServe()
 }
 

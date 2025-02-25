@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
 	"github.com/elsbrock/plundrio/internal/download"
+	"github.com/elsbrock/plundrio/internal/log"
 	"github.com/elsbrock/plundrio/internal/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -40,13 +40,24 @@ var runCmd = &cobra.Command{
 		if configFile != "" {
 			viper.SetConfigFile(configFile)
 			if err := viper.ReadInConfig(); err != nil {
-				log.Fatalf("Error reading config file: %v", err)
+				log.Fatal("config").Str("file", configFile).Err(err).Msg("Error reading config file")
 			}
-			log.Printf("Using config file: %s", viper.ConfigFileUsed())
+			log.Info("config").Str("file", viper.ConfigFileUsed()).Msg("Using config file")
 		}
 
 		// Bind flags to Viper
 		viper.BindPFlags(cmd.Flags())
+
+		// Set log level from flag/config/env (in that order)
+		logLevel := viper.GetString("log-level")
+		if logLevel != "" {
+			log.SetLevel(log.LogLevel(logLevel))
+		}
+
+		log.Debug("startup").
+			Str("version", version).
+			Str("log_level", logLevel).
+			Msg("Starting plundrio")
 
 		// Get configuration values
 		targetDir, _ := cmd.Flags().GetString("target")
@@ -55,14 +66,23 @@ var runCmd = &cobra.Command{
 		listenAddr, _ := cmd.Flags().GetString("listen")
 		workerCount, _ := cmd.Flags().GetInt("workers")
 
+		log.Debug("config").
+			Str("target_dir", targetDir).
+			Str("putio_folder", putioFolder).
+			Str("listen_addr", listenAddr).
+			Int("workers", workerCount).
+			Msg("Configuration loaded")
+
 		// Validate required flags
 		// Security warning for token in config file
 		if viper.ConfigFileUsed() != "" && viper.IsSet("token") {
-			log.Println("WARNING: OAuth token found in config file - consider using environment variable PLDR_TOKEN instead")
+			log.Warn("security").
+				Str("file", viper.ConfigFileUsed()).
+				Msg("OAuth token found in config file - consider using environment variable PLDR_TOKEN instead")
 		}
 
 		if targetDir == "" || putioFolder == "" || oauthToken == "" {
-			log.Println("Error: not all required flags were provided")
+			log.Error("config").Msg("Not all required flags were provided")
 			cmd.Usage()
 			os.Exit(1)
 		}
@@ -71,12 +91,12 @@ var runCmd = &cobra.Command{
 		stat, err := os.Stat(targetDir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				log.Fatalf("Target directory does not exist: %s", targetDir)
+				log.Fatal("config").Str("dir", targetDir).Msg("Target directory does not exist")
 			}
-			log.Fatalf("Error checking target directory: %v", err)
+			log.Fatal("config").Str("dir", targetDir).Err(err).Msg("Error checking target directory")
 		}
 		if !stat.IsDir() {
-			log.Fatalf("Target path is not a directory: %s", targetDir)
+			log.Fatal("config").Str("dir", targetDir).Msg("Target path is not a directory")
 		}
 
 		// Initialize configuration
@@ -92,33 +112,40 @@ var runCmd = &cobra.Command{
 		client := api.NewClient(cfg.OAuthToken)
 
 		// Authenticate and get account info
-		log.Println("Authenticating with Put.io...")
+		log.Info("auth").Msg("Authenticating with Put.io...")
 		if err := client.Authenticate(); err != nil {
-			log.Fatalf("Failed to authenticate with Put.io: %v", err)
+			log.Fatal("auth").Err(err).Msg("Failed to authenticate with Put.io")
 		}
-		log.Println("Authentication successful")
+		log.Info("auth").Msg("Authentication successful")
 
 		// Create/get folder ID
-		log.Printf("Setting up Put.io folder '%s'...", cfg.PutioFolder)
+		log.Info("setup").Str("folder", cfg.PutioFolder).Msg("Setting up Put.io folder")
 		folderID, err := client.EnsureFolder(cfg.PutioFolder)
 		if err != nil {
-			log.Fatalf("Failed to create/get folder: %v", err)
+			log.Fatal("setup").Str("folder", cfg.PutioFolder).Err(err).Msg("Failed to create/get folder")
 		}
 		cfg.FolderID = folderID
-		log.Printf("Using Put.io folder ID: %d", folderID)
+		log.Info("setup").
+			Str("folder", cfg.PutioFolder).
+			Int64("folder_id", folderID).
+			Msg("Using Put.io folder")
 
 		// Initialize download manager
 		dlManager := download.New(cfg, client)
 		dlManager.Start()
 		defer dlManager.Stop()
-		log.Println("Download manager started")
+		log.Info("manager").
+			Int("workers", cfg.WorkerCount).
+			Msg("Download manager started")
 
 		// Initialize and start RPC server
 		srv := server.New(cfg, client, dlManager)
 		go func() {
-			log.Printf("Starting transmission-rpc server on %s", cfg.ListenAddr)
+			log.Info("server").
+				Str("addr", cfg.ListenAddr).
+				Msg("Starting transmission-rpc server")
 			if err := srv.Start(); err != nil {
-				log.Fatalf("Server error: %v", err)
+				log.Fatal("server").Err(err).Msg("Server error")
 			}
 		}()
 
@@ -126,11 +153,17 @@ var runCmd = &cobra.Command{
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigChan
-		log.Printf("Received signal %v, shutting down...", sig)
+		log.Info("shutdown").
+			Str("signal", sig.String()).
+			Msg("Received signal, shutting down...")
 
 		// Cleanup and exit
+		log.Info("shutdown").Msg("Stopping download manager...")
+		dlManager.Stop()
+
+		log.Info("shutdown").Msg("Stopping server...")
 		if err := srv.Stop(); err != nil {
-			log.Printf("Error stopping server: %v", err)
+			log.Error("shutdown").Err(err).Msg("Error stopping server")
 		}
 	},
 }
@@ -147,10 +180,10 @@ folder: "plundrio"					# Folder name on Put.io
 token: "" 									# Get a token with get-token
 listen: ":9091"							# Transmission RPC server address
 workers: 4									# Number of download workers
-earlyDelete: false					# Delete files immediately on download
+log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 
 # Environment variables:
-# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN
+# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LOG_LEVEL
 `
 
 		outputPath := "plundrio-config.yaml"
@@ -158,10 +191,19 @@ earlyDelete: false					# Delete files immediately on download
 			outputPath = args[0]
 		}
 
+		log.Debug("config").
+			Str("path", outputPath).
+			Msg("Generating sample configuration")
+
 		if err := os.WriteFile(outputPath, []byte(cfg), 0644); err != nil {
-			log.Fatalf("Failed to write config file: %v", err)
+			log.Fatal("config").
+				Str("file", outputPath).
+				Err(err).
+				Msg("Failed to write config file")
 		}
-		log.Printf("Sample config created: %s", outputPath)
+		log.Info("config").
+			Str("file", outputPath).
+			Msg("Sample config created")
 	},
 }
 
@@ -172,10 +214,12 @@ var getTokenCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
+		log.Debug("auth").Msg("Starting OAuth device code flow")
+
 		// Step 1: Get OOB code from Put.io
 		resp, err := http.Get("https://api.put.io/v2/oauth2/oob/code?app_id=3270")
 		if err != nil {
-			log.Fatal("Failed to get OOB code:", err)
+			log.Fatal("auth").Err(err).Msg("Failed to get OOB code")
 		}
 		defer resp.Body.Close()
 
@@ -184,11 +228,14 @@ var getTokenCmd = &cobra.Command{
 			QrCodeURL string `json:"qr_code_url"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&codeResponse); err != nil {
-			log.Fatal("Failed to decode code response:", err)
+			log.Fatal("auth").Err(err).Msg("Failed to decode code response")
 		}
 
-		log.Printf("Visit put.io/link and enter code: %s\n", codeResponse.Code)
-		log.Println("Waiting for authorization...")
+		log.Info("auth").
+			Str("code", codeResponse.Code).
+			Str("qr_url", codeResponse.QrCodeURL).
+			Msg("Visit put.io/link and enter code")
+		log.Info("auth").Msg("Waiting for authorization...")
 
 		// Step 2: Poll for token
 		ticker := time.NewTicker(5 * time.Second)
@@ -197,11 +244,11 @@ var getTokenCmd = &cobra.Command{
 		for {
 			select {
 			case <-ctx.Done():
-				log.Fatal("Authorization timed out")
+				log.Fatal("auth").Msg("Authorization timed out")
 			case <-ticker.C:
 				tokenResp, err := http.Get("https://api.put.io/v2/oauth2/oob/code/" + codeResponse.Code)
 				if err != nil {
-					log.Fatal("Failed to check authorization status:", err)
+					log.Fatal("auth").Err(err).Msg("Failed to check authorization status")
 				}
 
 				var tokenResult struct {
@@ -215,9 +262,15 @@ var getTokenCmd = &cobra.Command{
 				tokenResp.Body.Close()
 
 				if tokenResult.Status == "OK" && tokenResult.OAuthToken != "" {
-					log.Printf("Successfully obtained access token: %s", tokenResult.OAuthToken)
+					log.Info("auth").
+						Str("token", tokenResult.OAuthToken).
+						Msg("Successfully obtained access token")
 					return
 				}
+
+				log.Debug("auth").
+					Str("status", tokenResult.Status).
+					Msg("Polling for authorization")
 			}
 		}
 	},
@@ -231,7 +284,7 @@ func init() {
 	runCmd.Flags().StringP("token", "k", "", "Put.io OAuth token (required)")
 	runCmd.Flags().StringP("listen", "l", ":9091", "Listen address")
 	runCmd.Flags().IntP("workers", "w", 4, "Number of workers")
-	runCmd.Flags().BoolP("early-delete", "e", false, "Enable early file deletion")
+	runCmd.Flags().String("log-level", "", "Log level (trace,debug,info,warn,error,fatal,none,pretty)")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(getTokenCmd)
@@ -240,6 +293,6 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+		log.Fatal("main").Err(err).Msg("Command execution failed")
 	}
 }

@@ -3,8 +3,9 @@ package download
 import (
 	"context"
 	"io"
-	"log"
 	"time"
+
+	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // setupProgressTracking configures progress tracking for the download
@@ -49,7 +50,11 @@ func (m *Manager) setupProgressTracking(state *DownloadState, body io.Reader, to
 // monitorDownloadProgress starts a goroutine to monitor and log download progress
 func (m *Manager) monitorDownloadProgress(ctx context.Context, state *DownloadState, reader *progressReader, totalSize int64, done chan struct{}, progressTicker *time.Ticker) {
 	go func() {
-		log.Printf("Starting download of %s (%.2f MB)", state.Name, float64(totalSize)/1024/1024)
+		log.Info("download").
+			Str("file_name", state.Name).
+			Float64("size_mb", float64(totalSize)/1024/1024).
+			Msg("Starting download")
+
 		for {
 			select {
 			case <-progressTicker.C:
@@ -68,11 +73,19 @@ func (m *Manager) monitorDownloadProgress(ctx context.Context, state *DownloadSt
 					eta := time.Until(state.ETA).Round(time.Second)
 					state.mu.Unlock()
 
-					log.Printf("Downloading %s: %.1f%% (%.1f/%.1f MB) - %.2f MB/s ETA: %s",
-						state.Name, progress, downloadedMB, totalMB, speedMBps, eta)
+					log.Info("download").
+						Str("file_name", state.Name).
+						Float64("progress_percent", progress).
+						Float64("downloaded_mb", downloadedMB).
+						Float64("total_mb", totalMB).
+						Float64("speed_mbps", speedMBps).
+						Str("eta", eta.String()).
+						Msg("Download progress")
 				}
 			case <-ctx.Done():
-				log.Printf("Download of %s cancelled", state.Name)
+				log.Info("download").
+					Str("file_name", state.Name).
+					Msg("Download cancelled")
 				return
 			case <-done:
 				return
@@ -98,12 +111,26 @@ func (m *Manager) monitorDownloadStall(ctx context.Context, state *DownloadState
 
 				if currentDownloaded == lastProgress && currentDownloaded < totalSize {
 					stalledDuration := time.Since(lastProgressTime)
-					if stalledDuration > downloadStallTimeout {
-						log.Printf("Download %s stalled for over %v, cancelling", state.Name, downloadStallTimeout)
+					if stalledDuration > m.dlConfig.DownloadStallTimeout {
+						log.Error("download").
+							Str("file_name", state.Name).
+							Dur("stalled_duration", stalledDuration).
+							Dur("timeout", m.dlConfig.DownloadStallTimeout).
+							Msg("Download stalled, cancelling")
+
+						// Create a stalled download error
+						stalledErr := NewDownloadStalledError(state.Name, stalledDuration)
+						log.Error("download").
+							Str("file_name", state.Name).
+							Err(stalledErr).
+							Msg("Download error")
 						cancel()
 						return
 					}
-					log.Printf("Warning: Download %s stalled for %v", state.Name, stalledDuration.Round(time.Second))
+					log.Warn("download").
+						Str("file_name", state.Name).
+						Dur("stalled_duration", stalledDuration.Round(time.Second)).
+						Msg("Download stalled")
 				} else {
 					lastProgress = currentDownloaded
 					lastProgressTime = time.Now()
