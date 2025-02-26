@@ -318,20 +318,20 @@ plundrio get-token
 
 ## ❓ Frequently Asked Questions
 
-**Q: Can I use plundrio without *arr applications?**
-A: Yes, plundrio will monitor and download any transfers in your configured put.io folder, regardless of how they were added.
+**Can I use plundrio without \*arr applications?**<br/>
+Yes, plundrio will monitor and download any transfers in your configured put.io folder, regardless of how they were added.
 
-**Q: How does plundrio compare to the official put.io client?**
-A: plundrio focuses on automation and integration with *arr applications, while the official client offers a more general-purpose interface.
+**How does plundrio compare to the official put.io client?**<br/>
+plundrio focuses on automation and integration with *arr applications, while the official client offers a more general-purpose interface.
 
-**Q: Can I run multiple instances of plundrio?**
-A: Yes, plundrio is stateless and can be run in multiple instances, even pointing to the same put.io account with different configurations.
+**Can I run multiple instances of plundrio?**<br/>
+Yes, plundrio is stateless and can be run in multiple instances, even pointing to the same put.io account with different configurations.
 
-**Q: Does plundrio support VPNs or proxies?**
-A: plundrio uses your system's network configuration. If your system routes through a VPN or proxy, plundrio will use that connection.
+**Does plundrio support VPNs or proxies?**<br/>
+plundrio uses your system's network configuration. If your system routes through a VPN or proxy, plundrio will use that connection.
 
-**Q: How can I monitor plundrio's status?**
-A: plundrio logs its activities to stdout. You can redirect these logs to a file or use a log management system.
+**How can I monitor plundrio's status?**<br/>
+plundrio logs its activities to stdout. You can redirect these logs to a file or use a log management system.
 
 ## 🤝 Contributing
 
