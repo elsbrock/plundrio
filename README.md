@@ -1,4 +1,4 @@
-# 🌊 plundrio
+<h1>🌊 plundrio</h1>
 
 <p align="center">
 <br/><br/>
@@ -15,36 +15,35 @@ plundrio (`/ˈplʌndriˌoʊ/`) is a put.io download client designed to seamlessl
 integrate with the *arr stack (Sonarr, Radarr, Lidarr, etc.). Files are
 automatically added to put.io and downloaded to the local disk once complete.
 
-## 📋 Table of Contents
+<h2>📋 Table of Contents</h2>
 
-- [🌊 plundrio](#-plundrio)
-  - [📋 Table of Contents](#-table-of-contents)
-  - [🚀 Features](#-features)
-  - [🔧 How It Works](#-how-it-works)
-  - [📋 Prerequisites](#-prerequisites)
-  - [📦 Installation](#-installation)
-    - [Using Go](#using-go)
-    - [Using Docker](#using-docker)
-    - [From Releases](#from-releases)
-  - [🚀 Getting Started](#-getting-started)
-    - [1. Obtain a put.io OAuth Token](#1-obtain-a-putio-oauth-token)
-    - [2. Generate a Configuration File (Optional)](#2-generate-a-configuration-file-optional)
-    - [3. Configure Your Download Directory](#3-configure-your-download-directory)
-    - [4. Start plundrio](#4-start-plundrio)
-    - [5. Configure Your \*arr Application](#5-configure-your-arr-application)
-  - [⚙️ Configuration](#️-configuration)
-    - [Configuration Priority](#configuration-priority)
-  - [🔌 Configuring \*arr Applications](#-configuring-arr-applications)
-  - [🎮 Commands](#-commands)
-    - [Run the download manager](#run-the-download-manager)
-    - [Generate configuration file](#generate-configuration-file)
-    - [Get OAuth token](#get-oauth-token)
-  - [💡 Tips \& Optimization](#-tips--optimization)
-  - [🔍 Troubleshooting](#-troubleshooting)
-    - [Common Issues](#common-issues)
-  - [❓ Frequently Asked Questions](#-frequently-asked-questions)
-  - [🤝 Contributing](#-contributing)
-  - [📜 License](#-license)
+- [🚀 Features](#-features)
+- [🔧 How It Works](#-how-it-works)
+- [📋 Prerequisites](#-prerequisites)
+- [📦 Installation](#-installation)
+  - [Using Go](#using-go)
+  - [Using NixOS](#using-nixos)
+  - [Using Docker](#using-docker)
+  - [From Releases](#from-releases)
+- [🚀 Getting Started](#-getting-started)
+  - [1. Obtain a put.io OAuth Token](#1-obtain-a-putio-oauth-token)
+  - [2. Generate a Configuration File (Optional)](#2-generate-a-configuration-file-optional)
+  - [3. Configure Your Download Directory](#3-configure-your-download-directory)
+  - [4. Start plundrio](#4-start-plundrio)
+  - [5. Configure Your \*arr Application](#5-configure-your-arr-application)
+- [⚙️ Configuration](#️-configuration)
+  - [Configuration Priority](#configuration-priority)
+- [🔌 Configuring \*arr Applications](#-configuring-arr-applications)
+- [🎮 Commands](#-commands)
+  - [Run the download manager](#run-the-download-manager)
+  - [Generate configuration file](#generate-configuration-file)
+  - [Get OAuth token](#get-oauth-token)
+- [💡 Tips \& Optimization](#-tips--optimization)
+- [🔍 Troubleshooting](#-troubleshooting)
+  - [Common Issues](#common-issues)
+- [❓ Frequently Asked Questions](#-frequently-asked-questions)
+- [🤝 Contributing](#-contributing)
+- [📜 License](#-license)
 
 ## 🚀 Features
 
@@ -62,7 +61,7 @@ automatically added to put.io and downloaded to the local disk once complete.
 plundrio makes downloading from put.io simple and automatic:
 
 ```mermaid
-graph TD
+graph LR
     A[*arr Application] -->|Sends download request| B[plundrio]
     B -->|Adds transfer to| C[put.io]
     C -->|Transfer completes| D[plundrio monitors]
@@ -94,6 +93,48 @@ Before installing plundrio, ensure you have:
 ```bash
 go install github.com/elsbrock/plundrio/cmd/plundrio@latest
 ```
+
+### Using NixOS
+
+plundrio can be integrated directly into your NixOS configuration as a service:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    plundrio.url = "github:elsbrock/plundrio";
+  };
+
+  outputs = { self, nixpkgs, plundrio, ... }: {
+    nixosConfigurations.mySystem = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        plundrio.nixosModules.default
+        {
+          services.plundrio = {
+            enable = true;
+            targetDir = "/var/lib/plundrio/downloads";
+            putioFolder = "plundrio";
+            oauthToken = "your-oauth-token";
+            # Optional configurations with defaults:
+            # listenAddr = ":9091";
+            # workerCount = 4;
+            # logLevel = "info";
+            # user = "plundrio";
+            # group = "plundrio";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The NixOS module:
+- Creates a dedicated system user and group (plundrio)
+- Sets up a systemd service with proper security hardening
+- Creates the target directory with appropriate permissions
+- Automatically starts at boot and restarts on failure
 
 ### Using Docker
 
