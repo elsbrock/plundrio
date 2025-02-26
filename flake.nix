@@ -160,8 +160,6 @@
           proxyVendor = true;
           subPackages = [ "cmd/plundrio" ];
 
-          env.CGO_ENABLED = "0";
-
           # Modified ldflags to work with pure Go builds
           ldflags = [
             "-X main.version=${version}"  # Inject version from package definition
