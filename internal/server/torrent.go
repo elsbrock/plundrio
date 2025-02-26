@@ -95,7 +95,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		}
 		status := s.mapPutioStatus(t.Status)
 		torrents = append(torrents, map[string]interface{}{
-			"id":           t.ID,
+			"id":           t.Hash,
 			"name":         t.Name,
 			"status":       status,
 			"downloadDir":  s.cfg.TargetDir,

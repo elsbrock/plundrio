@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/log"
-	"github.com/putdotio/go-putio/putio"
 )
 
 // TransferProcessor handles the processing of Put.io transfers
