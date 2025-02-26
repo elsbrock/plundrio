@@ -35,7 +35,7 @@ func GetDefaultConfig() *DownloadConfig {
 		DefaultWorkerCount:     3,                // 3 concurrent downloads by default
 		BufferMultiple:         5,                // Buffer size = 5 * worker count
 		ProgressUpdateInterval: 5 * time.Second,  // Log progress every 5 seconds
-		TransferCheckInterval:  5 * time.Second,  // Check for new transfers every 5 seconds
+		TransferCheckInterval:  30 * time.Second, // Check for new transfers every 30 seconds
 		IdleConnectionTimeout:  90 * time.Second, // Keep idle connections for 90 seconds
 		DownloadHeaderTimeout:  30 * time.Second, // 30 second timeout for response headers
 		DownloadStallTimeout:   2 * time.Minute,  // Cancel download if stalled for 2 minutes
