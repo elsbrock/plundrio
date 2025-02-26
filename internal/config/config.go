@@ -19,10 +19,4 @@ type Config struct {
 
 	// WorkerCount is the number of concurrent download workers (default: 4)
 	WorkerCount int
-
-	// DeleteBeforeCompleted controls whether to delete files and transfers before they reach completed state
-	// If true, files will be deleted as soon as possible (even during seeding)
-	// If false, files will only be deleted once they reach completed state
-	// Default is true to maintain backward compatibility
-	DeleteBeforeCompleted bool
 }

@@ -183,7 +183,7 @@ workers: 4									# Number of download workers
 log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 
 # Environment variables:
-# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LOG_LEVEL
+# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS, PLDR_LOG_LEVEL
 `
 
 		outputPath := "plundrio-config.yaml"

@@ -1,11 +1,12 @@
 # Plundrio configuration
 # Save as ~/.plundrio.yaml or specify with --config
 
-targetDir: /path/to/downloads
-putioFolder: "plundrio"
-oauthToken: "" # Use put.io OAuth token or environment variable
-listenAddr: ":9091"
-workerCount: 4
+target: /path/to/downloads	# Target directory for downloads
+folder: "plundrio"					# Folder name on Put.io
+token: "" 									# Get a token with get-token
+listen: ":9091"							# Transmission RPC server address
+workers: 4									# Number of download workers
+log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 
 # Environment variables:
-# PLDR_TARGETDIR, PLDR_PUTIOFOLDER, PLDR_OAUTHTOKEN
+# PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS, PLDR_LOG_LEVEL

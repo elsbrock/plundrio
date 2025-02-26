@@ -108,9 +108,9 @@ docker run -d \
   --name plundrio \
   -p 9091:9091 \
   -v /path/to/downloads:/downloads \
-  -e PLDR_OAUTHTOKEN=your-token \
-  -e PLDR_TARGETDIR=/downloads \
-  -e PLDR_PUTIOFOLDER=plundrio \
+  -e PLDR_TOKEN=your-token \
+  -e PLDR_TARGET=/downloads \
+  -e PLDR_FOLDER=plundrio \
   ghcr.io/elsbrock/plundrio:latest
 ```
 
@@ -161,12 +161,12 @@ plundrio supports multiple configuration methods:
 1. **Config file** (YAML format):
 
 ```yaml
-targetDir: /path/to/downloads     # Target directory for downloads
-putioFolder: "plundrio"          # Folder name on put.io
-oauthToken: ""                   # Put.io OAuth token (prefer env var)
-listenAddr: ":9091"             # Transmission RPC server address
-workerCount: 4                  # Number of download workers
-deleteBeforeCompleted: false    # Delete files after download completion
+target: /path/to/downloads     # Target directory for downloads
+folder: "plundrio"             # Folder name on put.io
+token: ""                      # Put.io OAuth token (prefer env var)
+listen: ":9091"                # Transmission RPC server address
+workers: 4                     # Number of download workers
+log_level: "info"              # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 ```
 
 2. **Command-line flags** (see full list with `plundrio run --help`)
@@ -174,11 +174,12 @@ deleteBeforeCompleted: false    # Delete files after download completion
 3. **Environment variables** (prefixed with `PLDR_`):
 
 ```bash
-export PLDR_TARGETDIR=/path/to/downloads
-export PLDR_OAUTHTOKEN=your-putio-token
-export PLDR_PUTIOFOLDER=plundrio
-export PLDR_LISTENADDR=:9091
-export PLDR_WORKERCOUNT=4
+export PLDR_TARGET=/path/to/downloads
+export PLDR_TOKEN=your-putio-token
+export PLDR_FOLDER=plundrio
+export PLDR_LISTEN=:9091
+export PLDR_WORKERS=4
+export PLDR_LOG_LEVEL=info
 ```
 
 ### Configuration Priority
