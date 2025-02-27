@@ -17,6 +17,19 @@ type TransferProcessor struct {
 	targetDir string
 }
 
+// GetTransfers returns a copy of all transfers for a given folder ID
+func (p *TransferProcessor) GetTransfers() []*putio.Transfer {
+	var allTransfers []*putio.Transfer
+	for _, transfers := range p.transfers {
+		for _, t := range transfers {
+			if t.SaveParentID == p.folderID {
+				allTransfers = append(allTransfers, t)
+			}
+		}
+	}
+	return allTransfers
+}
+
 // newTransferProcessor creates a new transfer processor
 func newTransferProcessor(m *Manager) *TransferProcessor {
 	return &TransferProcessor{
@@ -142,7 +155,7 @@ func (p *TransferProcessor) processReadyTransfers() {
 
 // isTransferBeingProcessed checks if a transfer is already being handled
 func (p *TransferProcessor) isTransferBeingProcessed(transferID int64) bool {
-	if _, exists := p.manager.coordinator.getTransferContext(transferID); exists {
+	if _, exists := p.manager.coordinator.GetTransferContext(transferID); exists {
 		log.Debug("transfers").
 			Int64("transfer_id", transferID).
 			Msg("Transfer already being processed")

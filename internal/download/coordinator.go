@@ -50,7 +50,7 @@ func (tc *TransferCoordinator) InitiateTransfer(id int64, name string, fileID in
 
 // StartDownload marks a transfer as downloading
 func (tc *TransferCoordinator) StartDownload(transferID int64) error {
-	ctx, ok := tc.getTransferContext(transferID)
+	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
 		return NewTransferNotFoundError(transferID)
 	}
@@ -73,7 +73,7 @@ func (tc *TransferCoordinator) StartDownload(transferID int64) error {
 
 // FileCompleted marks a file as completed and checks if the transfer is done
 func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
-	ctx, ok := tc.getTransferContext(transferID)
+	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
 		// If transfer not found, it might have been already completed
 		log.Debug("transfer").
@@ -133,7 +133,7 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 
 // CompleteTransfer marks a transfer as completed and triggers cleanup
 func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
-	ctx, ok := tc.getTransferContext(transferID)
+	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
 		return NewTransferNotFoundError(transferID)
 	}
@@ -168,7 +168,7 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 
 // FailTransfer marks a transfer as failed
 func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
-	ctx, ok := tc.getTransferContext(transferID)
+	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
 		return NewTransferNotFoundError(transferID)
 	}
@@ -213,8 +213,8 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 	return nil
 }
 
-// getTransferContext safely retrieves a transfer context
-func (tc *TransferCoordinator) getTransferContext(transferID int64) (*TransferContext, bool) {
+// GetTransferContext safely retrieves a transfer context
+func (tc *TransferCoordinator) GetTransferContext(transferID int64) (*TransferContext, bool) {
 	if value, ok := tc.transfers.Load(transferID); ok {
 		return value.(*TransferContext), true
 	}

@@ -29,6 +29,18 @@ type Manager struct {
 	jobs    chan downloadJob
 	mu      sync.Mutex // protects job queueing
 	running bool       // tracks if manager is running
+
+	processor *TransferProcessor // Handles transfer processing
+}
+
+// GetTransferProcessor returns the manager's transfer processor
+func (m *Manager) GetTransferProcessor() *TransferProcessor {
+	return m.processor
+}
+
+// GetCoordinator returns the manager's transfer coordinator
+func (m *Manager) GetCoordinator() *TransferCoordinator {
+	return m.coordinator
 }
 
 // New creates a new download manager
@@ -51,12 +63,13 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		activeFiles: sync.Map{},
 	}
 
-	// Initialize coordinator
+	// Initialize coordinator and processor
 	m.coordinator = NewTransferCoordinator(m)
+	m.processor = newTransferProcessor(m)
 
 	// Register cleanup hooks
 	m.coordinator.RegisterCleanupHook(func(transferID int64) error {
-		state, ok := m.coordinator.getTransferContext(transferID)
+		state, ok := m.coordinator.GetTransferContext(transferID)
 		if !ok {
 			return NewTransferNotFoundError(transferID)
 		}
@@ -182,7 +195,7 @@ func (m *Manager) QueueDownload(job downloadJob) {
 // cleanupTransfer handles the deletion of a completed transfer and its source files
 func (m *Manager) cleanupTransfer(transferID int64) {
 	// Get transfer state before cleanup
-	ctx, ok := m.coordinator.getTransferContext(transferID)
+	ctx, ok := m.coordinator.GetTransferContext(transferID)
 	if !ok {
 		log.Debug("transfers").
 			Int64("id", transferID).

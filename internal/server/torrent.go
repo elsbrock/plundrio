@@ -106,19 +106,20 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	transfers, err := s.client.GetTransfers()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get transfers: %w", err)
+	// Get transfers from processor
+	allTransfers := s.dlManager.GetTransferProcessor().GetTransfers()
+
+	// Filter for completed or seeding transfers
+	var transfers []*putio.Transfer
+	for _, t := range allTransfers {
+		if t.Status == "COMPLETED" || t.Status == "SEEDING" {
+			transfers = append(transfers, t)
+		}
 	}
 
 	// Convert Put.io transfers to transmission format
 	torrents := make([]map[string]interface{}, 0, len(transfers))
 	for _, t := range transfers {
-		// Only include transfers in our folder
-		if t.SaveParentID != s.cfg.FolderID {
-			continue
-		}
-
 		// Filter by IDs if specified
 		if len(params.IDs) > 0 {
 			found := false
@@ -133,6 +134,17 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			}
 		}
 
+		// Calculate combined progress
+		var percentDone float64
+		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
+			// Local download progress (50-100%)
+			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
+			percentDone = 0.5 + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
+		} else {
+			// Put.io progress only (0-50%)
+			percentDone = float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
+		}
+
 		status := s.mapPutioStatus(t.Status)
 		torrents = append(torrents, map[string]interface{}{
 			"id":             t.ID,
@@ -144,7 +156,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"leftUntilDone":  int64(t.Size) - t.Downloaded,
 			"uploadedEver":   t.Uploaded,
 			"downloadedEver": t.Downloaded,
-			"percentDone":    float64(t.PercentDone) / 100.0,
+			"percentDone":    percentDone,
 			"rateDownload":   t.DownloadSpeed,
 			"rateUpload":     t.UploadSpeed,
 			"uploadRatio":    float64(t.Uploaded) / float64(t.Size),
