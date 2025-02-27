@@ -136,16 +136,29 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 
 		// Calculate combined progress
 		var percentDone float64
-		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
-			// Local download progress (50-100%)
-			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
-			percentDone = 0.5 + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
-		} else {
-			// Put.io progress only (0-50%)
-			percentDone = float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
-		}
+		var status int
 
-		status := s.mapPutioStatus(t.Status)
+		// Always map put.io progress to 0-50%
+		putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
+
+		// Check if we have a transfer context
+		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
+			// Add local download progress (50-100%) if files are being downloaded
+			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
+			percentDone = putioProgress + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
+
+			// Only set status to completed/seeding if all files are downloaded locally
+			if ctx.State == 2 { // TransferLifecycleCompleted = 2
+				status = s.mapPutioStatus(t.Status)
+			} else {
+				// If not all files are downloaded, show as downloading
+				status = 4 // TR_STATUS_DOWNLOAD
+			}
+		} else {
+			// Only put.io progress available
+			percentDone = putioProgress
+			status = s.mapPutioStatus(t.Status)
+		}
 		torrents = append(torrents, map[string]interface{}{
 			"id":             t.ID,
 			"hashString":     t.Hash,
