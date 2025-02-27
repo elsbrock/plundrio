@@ -214,6 +214,9 @@ func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err er
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
 			Msg("Files no longer exist on Put.io, cleaning up")
+
+		// Initialize transfer context before cleanup
+		p.initializeTransfer(transfer, 0)
 		p.manager.cleanupTransfer(transfer.ID)
 		return
 	}

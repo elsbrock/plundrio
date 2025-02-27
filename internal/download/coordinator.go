@@ -218,5 +218,20 @@ func (tc *TransferCoordinator) getTransferContext(transferID int64) (*TransferCo
 	if value, ok := tc.transfers.Load(transferID); ok {
 		return value.(*TransferContext), true
 	}
+	// Add debug logging when transfer context is not found
+	log.Debug("transfer").
+		Int64("id", transferID).
+		Msg("Transfer context not found in coordinator")
+
+	// Debug: List all known transfers
+	var knownTransfers []int64
+	tc.transfers.Range(func(key, value interface{}) bool {
+		knownTransfers = append(knownTransfers, key.(int64))
+		return true
+	})
+	log.Debug("transfer").
+		Interface("known_transfers", knownTransfers).
+		Msg("Currently tracked transfers")
+
 	return nil, false
 }

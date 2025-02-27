@@ -184,7 +184,7 @@ func (m *Manager) cleanupTransfer(transferID int64) {
 	// Get transfer state before cleanup
 	ctx, ok := m.coordinator.getTransferContext(transferID)
 	if !ok {
-		log.Error("transfers").
+		log.Debug("transfers").
 			Int64("id", transferID).
 			Msg("Transfer not found during cleanup")
 		return
