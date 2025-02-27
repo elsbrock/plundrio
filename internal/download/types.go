@@ -82,6 +82,7 @@ type TransferContext struct {
 	FileID         int64
 	TotalFiles     int32
 	CompletedFiles int32
+	FailedFiles    int32 // Track number of failed files
 	State          TransferLifecycleState
 	Error          error
 	mu             sync.RWMutex

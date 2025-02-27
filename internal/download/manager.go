@@ -224,11 +224,91 @@ func (m *Manager) cleanupTransfer(transferID int64) {
 }
 
 // handleFileCompletion updates transfer state when a file completes downloading
-func (m *Manager) handleFileCompletion(transferID int64) {
+// This is called for successful downloads only with the specific fileID that completed
+func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
+	// First increment the completion counter in the transfer coordinator
 	if err := m.coordinator.FileCompleted(transferID); err != nil {
 		log.Error("transfers").
 			Int64("transfer_id", transferID).
+			Int64("file_id", fileID).
 			Err(err).
 			Msg("Failed to handle file completion")
+		return
+	}
+
+	// Log detailed completion info
+	log.Debug("transfers").
+		Int64("transfer_id", transferID).
+		Int64("file_id", fileID).
+		Msg("File marked as completed")
+
+	// Now that the counter has been incremented, remove the file from active tracking
+	m.activeFiles.Delete(fileID)
+
+	// Check if the transfer is marked as completed
+	ctx, ok := m.coordinator.GetTransferContext(transferID)
+	if !ok {
+		log.Debug("transfers").
+			Int64("transfer_id", transferID).
+			Msg("Transfer context not found after completion")
+		return // Transfer context already gone
+	}
+
+	// Get transfer state under lock
+	ctx.mu.RLock()
+	isCompleted := ctx.State == TransferLifecycleCompleted
+	totalFiles := ctx.TotalFiles
+	completedFiles := ctx.CompletedFiles
+	ctx.mu.RUnlock()
+
+	// Log transfer state
+	log.Debug("transfers").
+		Int64("id", transferID).
+		Int32("completed_files", completedFiles).
+		Int32("total_files", totalFiles).
+		Bool("is_completed_state", isCompleted).
+		Msg("Transfer completion status")
+
+	// If the transfer is in completed state, check if all downloads are done
+	if isCompleted {
+		// Count active files for this transfer
+		activeCount := 0
+		m.activeFiles.Range(func(key, value interface{}) bool {
+			fileTransferID := value.(int64)
+			if fileTransferID == transferID {
+				activeCount++
+			}
+			return true
+		})
+
+		log.Debug("transfers").
+			Int64("id", transferID).
+			Int("active_files", activeCount).
+			Msg("Active files for completed transfer")
+
+		// Only if no active files remain for this transfer, finalize it
+		if activeCount == 0 {
+			log.Info("transfers").
+				Int64("id", transferID).
+				Msg("All downloads complete, finalizing transfer")
+
+			if err := m.coordinator.CompleteTransfer(transferID); err != nil {
+				log.Error("transfers").
+					Int64("id", transferID).
+					Err(err).
+					Msg("Failed to finalize completed transfer")
+			}
+		}
+	}
+}
+
+// handleFileFailure marks a file as failed in the transfer context
+// This is called when a file fails to download
+func (m *Manager) handleFileFailure(transferID int64) {
+	if err := m.coordinator.FileFailure(transferID); err != nil {
+		log.Error("transfers").
+			Int64("transfer_id", transferID).
+			Err(err).
+			Msg("Failed to handle file failure")
 	}
 }

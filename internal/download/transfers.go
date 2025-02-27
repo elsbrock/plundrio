@@ -95,6 +95,9 @@ func (p *TransferProcessor) checkTransfers() {
 	p.processInProgressTransfers()
 	p.processReadyTransfers()
 	p.processErroredTransfers()
+
+	// Check for transfers that are in "Completed" state but haven't been fully cleaned up
+	p.finalizeCompletedTransfers()
 }
 
 // logTransferSummary logs counts of transfers in each status
@@ -248,6 +251,16 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 		if p.shouldDownloadFile(transfer, file) {
 			filesToDownload++
 			p.queueFileDownload(transfer, file)
+		} else {
+			// For files we don't need to download (already exist), mark as completed
+			// This ensures our file count tracking is accurate
+			if err := p.manager.coordinator.FileCompleted(transfer.ID); err != nil {
+				log.Error("transfers").
+					Int64("transfer_id", transfer.ID).
+					Str("file_name", file.Name).
+					Err(err).
+					Msg("Failed to mark existing file as completed")
+			}
 		}
 	}
 	return filesToDownload
@@ -330,6 +343,48 @@ func (p *TransferProcessor) processErroredTransfers() {
 				Int64("id", transfer.ID).
 				Err(err).
 				Msg("Failed to delete errored transfer")
+		}
+	}
+}
+
+// finalizeCompletedTransfers checks for transfers that are marked as completed in the
+// internal tracking system but haven't been fully cleaned up yet.
+func (p *TransferProcessor) finalizeCompletedTransfers() {
+	// Get all active transfers from the coordinator
+	var pendingCleanup []int64
+
+	p.manager.coordinator.transfers.Range(func(key, value interface{}) bool {
+		transferID := key.(int64)
+		ctx := value.(*TransferContext)
+
+		// Check if this transfer is in Completed state but hasn't been cleaned up
+		ctx.mu.RLock()
+		isCompletedPending := ctx.State == TransferLifecycleCompleted
+		name := ctx.Name
+		ctx.mu.RUnlock()
+
+		if isCompletedPending {
+			log.Info("transfers").
+				Int64("id", transferID).
+				Str("name", name).
+				Msg("Found completed transfer pending cleanup")
+			pendingCleanup = append(pendingCleanup, transferID)
+		}
+		return true
+	})
+
+	// Process any transfers that need cleanup
+	for _, transferID := range pendingCleanup {
+		log.Info("transfers").
+			Int64("id", transferID).
+			Msg("Finalizing completed transfer")
+
+		// Call CompleteTransfer which will run cleanup hooks and delete the context
+		if err := p.manager.coordinator.CompleteTransfer(transferID); err != nil {
+			log.Error("transfers").
+				Int64("id", transferID).
+				Err(err).
+				Msg("Failed to finalize completed transfer")
 		}
 	}
 }

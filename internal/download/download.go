@@ -46,13 +46,19 @@ func (m *Manager) downloadWorker() {
 					Str("file_name", job.Name).
 					Err(err).
 					Msg("Failed to download file")
-				m.coordinator.FailTransfer(job.TransferID, err)
+
+				// Just remove the file from active files but don't fail the entire transfer
+				// We'll keep the transfer context so we can retry later
 				m.activeFiles.Delete(job.FileID)
+
+				// Mark this file as failed in the transfer context
+				m.handleFileFailure(job.TransferID)
 				continue
 			}
-			// Handle successful downloads
-			m.handleFileCompletion(job.TransferID)
-			m.activeFiles.Delete(job.FileID)
+			// Pass both transferID and fileID to handleFileCompletion
+			// The file cleanup is now handled inside handleFileCompletion
+			m.handleFileCompletion(job.TransferID, job.FileID)
+			// Do NOT call m.activeFiles.Delete here - now handled in handleFileCompletion
 		}
 	}
 }

@@ -90,7 +90,9 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 		return nil
 	}
 
-	if ctx.State != TransferLifecycleDownloading {
+	// Allow file completions even if the transfer is in a failed state
+	// This lets us track progress even if some files failed
+	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleFailed {
 		return fmt.Errorf("cannot complete file: transfer %d is in state %s", transferID, ctx.State)
 	}
 
@@ -105,33 +107,88 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 		Float64("progress", progress).
 		Msg("File completed")
 
-	// Check if all files are done
-	if completed >= ctx.TotalFiles {
-		// We already have the lock, so call complete directly
-		ctx.State = TransferLifecycleCompleted
+	// Check if all files are done (completed + failed = total)
+	if completed+ctx.FailedFiles >= ctx.TotalFiles {
+		// Only mark as completed if there are no failed files
+		if ctx.FailedFiles == 0 {
+			// We already have the lock, so just update the state
+			// BUT don't remove the transfer context yet - active downloads may still need it
+			ctx.State = TransferLifecycleCompleted
+			log.Info("transfer").
+				Int64("id", transferID).
+				Str("name", ctx.Name).
+				Int32("completed", completed).
+				Int32("total", ctx.TotalFiles).
+				Msg("Transfer marked as completed, waiting for final cleanup")
+
+			// The actual cleanup and transfer context removal will happen
+			// when all downloads have explicitly finished and CompleteTransfer is called
+		} else {
+			// If there are failed files, mark as failed but don't delete
+			ctx.State = TransferLifecycleFailed
+			log.Info("transfer").
+				Int64("id", transferID).
+				Str("name", ctx.Name).
+				Int32("failed", ctx.FailedFiles).
+				Int32("total", ctx.TotalFiles).
+				Msg("Transfer has failed files, keeping for retry")
+		}
+	}
+
+	return nil
+}
+
+// FileFailure marks a file as failed but keeps the transfer context
+func (tc *TransferCoordinator) FileFailure(transferID int64) error {
+	ctx, ok := tc.GetTransferContext(transferID)
+	if !ok {
+		// If transfer not found, it might have been already completed
+		log.Debug("transfer").
+			Int64("id", transferID).
+			Msg("Transfer not found during file failure, might be already completed")
+		return nil
+	}
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	// If transfer is already completed, just return
+	if ctx.State == TransferLifecycleCompleted {
+		return nil
+	}
+
+	// Increment failed files counter
+	failed := atomic.AddInt32(&ctx.FailedFiles, 1)
+	completed := ctx.CompletedFiles
+	total := ctx.TotalFiles
+
+	// Mark transfer as failed but don't delete it
+	ctx.State = TransferLifecycleFailed
+
+	log.Error("transfer").
+		Int64("id", transferID).
+		Str("name", ctx.Name).
+		Int32("failed", failed).
+		Int32("completed", completed).
+		Int32("total", total).
+		Msg("File failed but keeping transfer for retry")
+
+	// Check if all files are processed (completed + failed = total)
+	if completed+failed >= total {
 		log.Info("transfer").
 			Int64("id", transferID).
 			Str("name", ctx.Name).
-			Msg("Transfer completed")
-
-		// Run cleanup hooks
-		for _, hook := range tc.cleanupHooks {
-			if err := hook(transferID); err != nil {
-				log.Error("transfer").
-					Int64("id", transferID).
-					Err(err).
-					Msg("Cleanup hook failed")
-			}
-		}
-
-		// Remove transfer context
-		tc.transfers.Delete(transferID)
+			Int32("failed", failed).
+			Int32("completed", completed).
+			Int32("total", total).
+			Msg("All files processed, some failed, keeping transfer for retry")
 	}
 
 	return nil
 }
 
 // CompleteTransfer marks a transfer as completed and triggers cleanup
+// This is the final step that removes the transfer context and runs cleanup hooks
 func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
@@ -141,15 +198,34 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
-	if ctx.State != TransferLifecycleDownloading {
+	// Allow completion from both Downloading and Completed states
+	// This handles both:
+	// 1. Normal completion directly from Downloading
+	// 2. Final cleanup for transfers already marked Completed but waiting for active downloads
+	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleCompleted {
 		return fmt.Errorf("invalid state transition: %s -> Completed", ctx.State)
 	}
 
+	// Make sure it's marked as completed (might already be)
 	ctx.State = TransferLifecycleCompleted
+
+	// Double-check that all files are actually completed
+	if ctx.CompletedFiles+ctx.FailedFiles < ctx.TotalFiles {
+		log.Warn("transfer").
+			Int64("id", transferID).
+			Str("name", ctx.Name).
+			Int32("completed", ctx.CompletedFiles).
+			Int32("failed", ctx.FailedFiles).
+			Int32("total", ctx.TotalFiles).
+			Msg("Attempting to complete transfer before all files are done")
+		return fmt.Errorf("cannot complete transfer: %d/%d files still pending",
+			ctx.TotalFiles-(ctx.CompletedFiles+ctx.FailedFiles), ctx.TotalFiles)
+	}
+
 	log.Info("transfer").
 		Int64("id", transferID).
 		Str("name", ctx.Name).
-		Msg("Transfer completed")
+		Msg("Transfer fully completed and cleaning up")
 
 	// Run cleanup hooks
 	for _, hook := range tc.cleanupHooks {
@@ -161,7 +237,7 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 		}
 	}
 
-	// Remove transfer context
+	// Remove transfer context only after all hooks have run
 	tc.transfers.Delete(transferID)
 	return nil
 }
@@ -188,7 +264,8 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 		return nil
 	}
 
-	// For real failures, mark as failed and clean up
+	// For real failures, mark as failed but don't clean up
+	// We'll keep the transfer context so we can retry later
 	ctx.State = TransferLifecycleFailed
 	ctx.Error = err
 
@@ -196,20 +273,10 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 		Int64("id", transferID).
 		Str("name", ctx.Name).
 		Err(err).
-		Msg("Transfer failed")
+		Msg("Transfer failed but keeping context for retry")
 
-	// Run cleanup hooks for permanent failures
-	for _, hook := range tc.cleanupHooks {
-		if err := hook(transferID); err != nil {
-			log.Error("transfer").
-				Int64("id", transferID).
-				Err(err).
-				Msg("Cleanup hook failed")
-		}
-	}
-
-	// Remove transfer context for permanent failures
-	tc.transfers.Delete(transferID)
+	// Don't run cleanup hooks or delete the transfer context
+	// This allows other files to continue downloading and we can retry failed files later
 	return nil
 }
 
