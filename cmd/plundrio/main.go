@@ -48,7 +48,7 @@ var runCmd = &cobra.Command{
 		// Bind flags to Viper
 		viper.BindPFlags(cmd.Flags())
 
-		// Set log level from flag/config/env (in that order)
+		// Set log level from env/config/flag (in that order)
 		logLevel := viper.GetString("log-level")
 		if logLevel != "" {
 			log.SetLevel(log.LogLevel(logLevel))
@@ -59,12 +59,12 @@ var runCmd = &cobra.Command{
 			Str("log_level", logLevel).
 			Msg("Starting plundrio")
 
-		// Get configuration values
-		targetDir, _ := cmd.Flags().GetString("target")
-		putioFolder, _ := cmd.Flags().GetString("folder")
-		oauthToken, _ := cmd.Flags().GetString("token")
-		listenAddr, _ := cmd.Flags().GetString("listen")
-		workerCount, _ := cmd.Flags().GetInt("workers")
+		// Get configuration values from viper (which checks env vars, config file, and flags)
+		targetDir := viper.GetString("target")
+		putioFolder := viper.GetString("folder")
+		oauthToken := viper.GetString("token")
+		listenAddr := viper.GetString("listen")
+		workerCount := viper.GetInt("workers")
 
 		log.Debug("config").
 			Str("target_dir", targetDir).
@@ -73,7 +73,7 @@ var runCmd = &cobra.Command{
 			Int("workers", workerCount).
 			Msg("Configuration loaded")
 
-		// Validate required flags
+		// Validate required configuration values
 		// Security warning for token in config file
 		if viper.ConfigFileUsed() != "" && viper.IsSet("token") {
 			log.Warn("security").
@@ -82,7 +82,7 @@ var runCmd = &cobra.Command{
 		}
 
 		if targetDir == "" || putioFolder == "" || oauthToken == "" {
-			log.Error("config").Msg("Not all required flags were provided")
+			log.Error("config").Msg("Not all required configuration values were provided")
 			cmd.Usage()
 			os.Exit(1)
 		}
