@@ -3,6 +3,7 @@ module github.com/elsbrock/plundrio
 go 1.21
 
 require (
+	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/elsbrock/go-putio v0.0.0-20250226202422-08f14af78cc1
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.9.1
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/cavaliergopher/grab/v3 v3.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
