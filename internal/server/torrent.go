@@ -114,23 +114,11 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		Msg("Processing torrent-get request")
 
 	// Get transfers from processor
-	allTransfers := s.dlManager.GetTransferProcessor().GetTransfers()
+	transfers := s.dlManager.GetTransferProcessor().GetTransfers()
 	log.Debug("rpc").
 		Str("operation", "torrent-get").
-		Int("all_transfers_count", len(allTransfers)).
+		Int("all_transfers_count", len(transfers)).
 		Msg("Retrieved all transfers")
-
-	// Filter for completed or seeding transfers
-	var transfers []*putio.Transfer
-	for _, t := range allTransfers {
-		if t.Status == "COMPLETED" || t.Status == "SEEDING" {
-			transfers = append(transfers, t)
-		}
-	}
-	log.Debug("rpc").
-		Str("operation", "torrent-get").
-		Int("filtered_transfers_count", len(transfers)).
-		Msg("Filtered for completed/seeding transfers")
 
 	// Convert Put.io transfers to transmission format
 	torrents := make([]map[string]interface{}, 0, len(transfers))
