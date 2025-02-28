@@ -97,14 +97,25 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 	}
 
 	completed := atomic.AddInt32(&ctx.CompletedFiles, 1)
-	progress := float64(completed) / float64(ctx.TotalFiles) * 100
+
+	// Calculate progress based on file count
+	fileProgress := float64(completed) / float64(ctx.TotalFiles) * 100
+
+	// Calculate progress based on bytes if we have size information
+	var bytesProgress float64
+	if ctx.TotalSize > 0 {
+		bytesProgress = float64(ctx.DownloadedSize) / float64(ctx.TotalSize) * 100
+	}
 
 	log.Info("transfer").
 		Int64("id", transferID).
 		Str("name", ctx.Name).
 		Int32("completed", completed).
 		Int32("total", ctx.TotalFiles).
-		Float64("progress", progress).
+		Float64("file_progress", fileProgress).
+		Int64("downloaded_bytes", ctx.DownloadedSize).
+		Int64("total_bytes", ctx.TotalSize).
+		Float64("bytes_progress", bytesProgress).
 		Msg("File completed")
 
 	// Check if all files are done (completed + failed = total)
@@ -119,6 +130,8 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 				Str("name", ctx.Name).
 				Int32("completed", completed).
 				Int32("total", ctx.TotalFiles).
+				Int64("downloaded_bytes", ctx.DownloadedSize).
+				Int64("total_bytes", ctx.TotalSize).
 				Msg("Transfer marked as completed, waiting for final cleanup")
 
 			// The actual cleanup and transfer context removal will happen
@@ -246,7 +259,7 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	log.Info("transfer").
 		Int64("id", transferID).
 		Str("name", ctx.Name).
-		Msg("Transfer marked as processed and will be kept for *arr applications")
+		Msg("Transfer processed")
 
 	return nil
 }

@@ -157,18 +157,6 @@ func (m *Manager) Stop() {
 	m.monitorWg.Wait()
 }
 
-// cleanupDownload removes tracking state for a download and updates transfer completion
-func (m *Manager) cleanupDownload(fileID, transferID int64) {
-	// Remove from active files
-	m.activeFiles.Delete(fileID)
-
-	// Update transfer completion state via coordinator
-	if err := m.coordinator.FileCompleted(transferID); err != nil {
-		// Error is already logged by coordinator
-		return
-	}
-}
-
 // QueueDownload adds a download job to the queue if not already downloading
 func (m *Manager) QueueDownload(job downloadJob) {
 	m.mu.Lock()

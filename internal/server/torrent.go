@@ -159,38 +159,105 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		// Calculate combined progress
 		var percentDone float64
 		var status int
+		var leftUntilDone int64
 
 		// Check if we have a transfer context (transfer is being processed)
 		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
-			// For transfers being processed, use the 0-50% and 50-100% rule
-			// Always map put.io progress to 0-50%
+			// Get the context data
+			totalSize := ctx.TotalSize
+			downloadedSize := ctx.DownloadedSize
+			totalFiles := ctx.TotalFiles
+			completedFiles := ctx.CompletedFiles
+			state := ctx.State
+
+			// Calculate total size (Put.io download + local download)
+			// If we have size information, use it; otherwise fall back to the transfer size
+			totalTransferSize := totalSize
+			if totalTransferSize == 0 {
+				totalTransferSize = int64(t.Size)
+			}
+
+			// The total download task is considered as two parts:
+			// 1. Put.io downloading the torrent (50% of the total task)
+			// 2. Local downloading from Put.io (50% of the total task)
+
+			// Calculate Put.io progress (0-50%)
 			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
 
-			// Add local download progress (50-100%) if files are being downloaded
-			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
-			percentDone = putioProgress + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
+			// Calculate local download progress (0-50%)
+			var localProgress float64
+			if totalSize > 0 {
+				// If we have size information, use bytes downloaded
+				localProgress = float64(downloadedSize) / float64(totalSize) * 0.5 // Maps 0-1 to 0-0.5
+			} else if totalFiles > 0 {
+				// Fall back to file count if size information is not available
+				localProgress = float64(completedFiles) / float64(totalFiles) * 0.5 // Maps 0-1 to 0-0.5
+			}
+
+			// Combine the two progress values
+			percentDone = putioProgress + localProgress
+
+			// Calculate bytes left until done
+			// First, calculate how many bytes are left on Put.io side
+			putioLeftBytes := int64(float64(t.Size) * (1.0 - float64(t.PercentDone)/100.0))
+
+			// Then, calculate how many bytes are left on local download side
+			localLeftBytes := totalSize - downloadedSize
+
+			// Total bytes left is the sum of both
+			leftUntilDone = putioLeftBytes + localLeftBytes
+
+			// Ensure leftUntilDone is never negative
+			if leftUntilDone < 0 {
+				leftUntilDone = 0
+			}
 
 			// Check if the transfer is in the Processed state
-			if ctx.State == 5 { // TransferLifecycleProcessed = 5
+			if state == 5 { // TransferLifecycleProcessed = 5
 				// For transfers that have been processed locally, show as 100% complete
 				percentDone = 1.0 // 100%
+				leftUntilDone = 0 // Nothing left to download
 				status = 6        // TR_STATUS_SEED (completed/seeding)
-			} else if ctx.State == 2 { // TransferLifecycleCompleted = 2
+			} else if state == 2 { // TransferLifecycleCompleted = 2
 				status = s.mapPutioStatus(t.Status)
 			} else {
 				// If not all files are downloaded, show as downloading
 				status = 4 // TR_STATUS_DOWNLOAD
 			}
+
+			log.Debug("rpc").
+				Str("operation", "torrent-get").
+				Int64("id", t.ID).
+				Str("name", t.Name).
+				Float64("putio_progress", putioProgress*100).
+				Float64("local_progress", localProgress*100).
+				Float64("combined_progress", percentDone*100).
+				Int64("left_until_done", leftUntilDone).
+				Msg("Calculated progress for transfer with context")
 		} else if t.Status == "COMPLETED" || t.Status == "SEEDING" {
 			// For transfers that are completed on put.io but have no corresponding entry in the processor
 			// (i.e., already downloaded), show as 100% complete with status "downloaded"
 			percentDone = 1.0 // 100%
+			leftUntilDone = 0 // Nothing left to download
 			status = 6        // TR_STATUS_SEED (completed/seeding)
 		} else {
 			// For other transfers not being processed, just use put.io progress (0-50%)
 			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
 			percentDone = putioProgress
+
+			// Calculate bytes left on Put.io side only
+			leftUntilDone = int64(float64(t.Size) * (1.0 - float64(t.PercentDone)/100.0))
+
 			status = s.mapPutioStatus(t.Status)
+
+			log.Debug("rpc").
+				Str("operation", "torrent-get").
+				Int64("id", t.ID).
+				Str("name", t.Name).
+				Float64("putio_progress", putioProgress*100).
+				Float64("combined_progress", percentDone*100).
+				Int64("left_until_done", leftUntilDone).
+				Msg("Calculated progress for transfer without context")
 		}
 
 		torrentInfo := map[string]interface{}{
@@ -201,7 +268,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"status":         status,
 			"downloadDir":    s.cfg.TargetDir,
 			"totalSize":      t.Size,
-			"leftUntilDone":  int64(t.Size) - t.Downloaded,
+			"leftUntilDone":  leftUntilDone,
 			"uploadedEver":   t.Uploaded,
 			"downloadedEver": t.Downloaded,
 			"percentDone":    percentDone,

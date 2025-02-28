@@ -3,8 +3,6 @@ package download
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,22 +103,6 @@ func isTransientError(err error) bool {
 		return false
 	}
 
-	// Check for network errors
-	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary()
-	}
-
-	// Check for HTTP status codes that indicate temporary issues
-	if httpErr, ok := err.(*HTTPError); ok {
-		switch httpErr.StatusCode {
-		case http.StatusTooManyRequests,
-			http.StatusServiceUnavailable,
-			http.StatusGatewayTimeout,
-			http.StatusBadGateway:
-			return true
-		}
-	}
-
 	// Check for grab errors
 	if err.Error() == "connection reset" ||
 		err.Error() == "connection refused" ||
@@ -139,14 +121,17 @@ func isTransientError(err error) bool {
 	return false
 }
 
-// HTTPError represents an HTTP-specific error
-type HTTPError struct {
-	StatusCode int
-	Status     string
-}
+// configureGrabRequest configures a grab request with appropriate options
+func (m *Manager) configureGrabRequest(req *grab.Request) {
+	// Set request headers
+	req.HTTPRequest.Header.Set("User-Agent", "plundrio/1.0")
+	req.HTTPRequest.Header.Set("Accept", "*/*")
+	req.HTTPRequest.Header.Set("Connection", "keep-alive")
 
-func (e *HTTPError) Error() string {
-	return fmt.Sprintf("HTTP error: %s", e.Status)
+	// Configure request options
+	req.NoCreateDirectories = false // Allow grab to create directories
+	req.SkipExisting = false        // Don't skip existing files
+	req.NoResume = false            // Allow resuming downloads
 }
 
 // downloadFile downloads a file from Put.io to the target directory using grab
@@ -242,6 +227,20 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		elapsed := time.Since(state.StartTime).Seconds()
 		totalSize := resp.Size()
 		averageSpeedMBps := (float64(totalSize) / 1024 / 1024) / elapsed
+
+		// Update transfer context with the completed file size
+		if transferCtx, exists := m.coordinator.GetTransferContext(state.TransferID); exists {
+			// Update downloaded size
+			transferCtx.DownloadedSize += totalSize
+
+			log.Debug("download").
+				Str("file_name", state.Name).
+				Int64("transfer_id", state.TransferID).
+				Int64("file_size", totalSize).
+				Int64("transfer_downloaded", transferCtx.DownloadedSize).
+				Int64("transfer_total", transferCtx.TotalSize).
+				Msg("Updated transfer with completed file size")
+		}
 
 		log.Info("download").
 			Str("file_name", state.Name).

@@ -364,6 +364,33 @@ func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err er
 // queueTransferFiles processes files in a transfer and queues them for download
 func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files []*putio.File) int {
 	filesToDownload := 0
+
+	// Get the transfer context to update total size
+	ctx, exists := p.manager.coordinator.GetTransferContext(transfer.ID)
+	if !exists {
+		log.Error("transfers").
+			Int64("transfer_id", transfer.ID).
+			Msg("Transfer context not found when queueing files")
+		return 0
+	}
+
+	// Calculate total size of all files
+	var totalSize int64
+	for _, file := range files {
+		totalSize += file.Size
+	}
+
+	// Update the transfer context with total size
+	ctx.mu.Lock()
+	ctx.TotalSize = totalSize
+	ctx.mu.Unlock()
+
+	log.Info("transfers").
+		Int64("transfer_id", transfer.ID).
+		Int64("total_size", totalSize).
+		Int("file_count", len(files)).
+		Msg("Updated transfer with total file size")
+
 	for _, file := range files {
 		if p.shouldDownloadFile(transfer, file) {
 			filesToDownload++
@@ -378,6 +405,17 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 					Err(err).
 					Msg("Failed to mark existing file as completed")
 			}
+
+			// For existing files, add their size to the downloaded size
+			ctx.mu.Lock()
+			ctx.DownloadedSize += file.Size
+			ctx.mu.Unlock()
+
+			log.Debug("transfers").
+				Int64("transfer_id", transfer.ID).
+				Str("file_name", file.Name).
+				Int64("file_size", file.Size).
+				Msg("Added existing file size to downloaded total")
 		}
 	}
 	return filesToDownload
@@ -516,12 +554,6 @@ func (p *TransferProcessor) MarkTransferProcessed(transferID int64) {
 	log.Debug("transfers").
 		Int64("transfer_id", transferID).
 		Msg("Marked transfer as processed locally")
-}
-
-// IsTransferProcessed checks if a transfer has been processed locally
-func (p *TransferProcessor) IsTransferProcessed(transferID int64) bool {
-	_, processed := p.processedTransfers.Load(transferID)
-	return processed
 }
 
 // finalizeCompletedTransfers checks for transfers that are marked as completed in the

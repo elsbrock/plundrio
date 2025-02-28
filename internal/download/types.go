@@ -1,7 +1,6 @@
 package download
 
 import (
-	"io"
 	"sync"
 	"time"
 )
@@ -27,23 +26,6 @@ type DownloadState struct {
 	// Mutex to protect access to downloaded bytes counter
 	mu         sync.Mutex
 	downloaded int64
-}
-
-// progressReader wraps an io.Reader to track download progress
-type progressReader struct {
-	reader       io.Reader
-	onProgress   func(n int64)
-	startTime    time.Time
-	initialBytes int64
-}
-
-// Read implements io.Reader for progressReader
-func (r *progressReader) Read(p []byte) (n int, err error) {
-	n, err = r.reader.Read(p)
-	if n > 0 && r.onProgress != nil {
-		r.onProgress(int64(n))
-	}
-	return
 }
 
 // TransferLifecycleState represents the possible states of a transfer
@@ -86,6 +68,8 @@ type TransferContext struct {
 	TotalFiles     int32
 	CompletedFiles int32
 	FailedFiles    int32 // Track number of failed files
+	TotalSize      int64 // Total size of all files in bytes
+	DownloadedSize int64 // Total downloaded bytes
 	State          TransferLifecycleState
 	Error          error
 	mu             sync.RWMutex
