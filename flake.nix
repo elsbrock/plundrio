@@ -36,8 +36,16 @@
 
             oauthToken = lib.mkOption {
               type = lib.types.str;
-              description = "Put.io OAuth token";
+              description = "Put.io OAuth token (deprecated, use environmentFile instead)";
               example = "ABCDEF123456";
+              default = "";
+            };
+
+            environmentFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              description = "Path to environment file containing PLDR_TOKEN";
+              example = "/var/lib/plundrio/plundrio.env";
             };
 
             listenAddr = lib.mkOption {
@@ -103,7 +111,9 @@
                 Type = "simple";
                 User = cfg.user;
                 Group = cfg.group;
-                Environment = [
+                # Use environment file if provided, otherwise use the deprecated oauthToken option
+                EnvironmentFile = lib.mkIf (cfg.environmentFile != null) [ cfg.environmentFile ];
+                Environment = lib.mkIf (cfg.environmentFile == null && cfg.oauthToken != "") [
                   "PLDR_TOKEN=${lib.escapeShellArg cfg.oauthToken}"
                 ];
                 ExecStart = ''
