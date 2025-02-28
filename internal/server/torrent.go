@@ -207,7 +207,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			Str("hash", t.Hash).
 			Str("name", t.Name).
 			Str("status", t.Status).
-			Int64("size", t.Size).
+			Int("size", t.Size).
 			Float64("percent_done", percentDone).
 			Msg("Added torrent to response")
 	}
