@@ -105,19 +105,6 @@ func (p *TransferProcessor) checkTransfers() {
 		p.transfers[t.Status] = append(p.transfers[t.Status], t)
 	}
 
-	// Log the state of the transfers map after categorization
-	totalTransfersInMap := 0
-	for status, statusTransfers := range p.transfers {
-		totalTransfersInMap += len(statusTransfers)
-		log.Debug("transfers").
-			Str("status", status).
-			Int("count", len(statusTransfers)).
-			Msg("Transfers categorized by status")
-	}
-	log.Debug("transfers").
-		Int("total_transfers_in_map", totalTransfersInMap).
-		Msg("Total transfers added to map")
-
 	// Log transfer summary
 	p.logTransferSummary()
 
