@@ -152,7 +152,6 @@ func (p *TransferProcessor) logAllTransfersDetails() {
 			Int64("save_parent_id", t.SaveParentID).
 			Int64("file_id", t.FileID).
 			Int("size", t.Size).
-			Str("source", t.Source).
 			Str("type", t.Type).
 			Str("status_message", t.StatusMessage).
 			Int("availability", t.Availability).
