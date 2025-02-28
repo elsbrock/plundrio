@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,7 +62,7 @@ var runCmd = &cobra.Command{
 
 		// Get configuration values from viper (which checks env vars, config file, and flags)
 		targetDir := viper.GetString("target")
-		putioFolder := viper.GetString("folder")
+		putioFolder := strings.ToLower(viper.GetString("folder"))
 		oauthToken := viper.GetString("token")
 		listenAddr := viper.GetString("listen")
 		workerCount := viper.GetInt("workers")
