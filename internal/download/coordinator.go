@@ -188,7 +188,7 @@ func (tc *TransferCoordinator) FileFailure(transferID int64) error {
 }
 
 // CompleteTransfer marks a transfer as completed and triggers cleanup
-// This is the final step that removes the transfer context and runs cleanup hooks
+// This now marks the transfer as processed instead of removing it
 func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
@@ -237,8 +237,17 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 		}
 	}
 
-	// Remove transfer context only after all hooks have run
-	tc.transfers.Delete(transferID)
+	// Mark the transfer as processed instead of removing it
+	ctx.State = TransferLifecycleProcessed
+
+	// Mark the transfer as processed in the processor
+	tc.manager.GetTransferProcessor().MarkTransferProcessed(transferID)
+
+	log.Info("transfer").
+		Int64("id", transferID).
+		Str("name", ctx.Name).
+		Msg("Transfer marked as processed and will be kept for *arr applications")
+
 	return nil
 }
 

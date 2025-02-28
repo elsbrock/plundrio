@@ -113,24 +113,15 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		Interface("fields", params.Fields).
 		Msg("Processing torrent-get request")
 
-	// Get all transfers directly from put.io instead of just from the processor
-	putioTransfers, err := s.client.GetTransfers()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get transfers from put.io: %w", err)
-	}
-
-	// Filter transfers for our target folder
-	var transfers []*putio.Transfer
-	for _, t := range putioTransfers {
-		if t.SaveParentID == s.cfg.FolderID {
-			transfers = append(transfers, t)
-		}
-	}
+	// Get transfers from the processor, which now keeps track of all transfers
+	// including completed ones that have been processed
+	processor := s.dlManager.GetTransferProcessor()
+	transfers := processor.GetTransfers()
 
 	log.Debug("rpc").
 		Str("operation", "torrent-get").
 		Int("all_transfers_count", len(transfers)).
-		Msg("Retrieved all transfers")
+		Msg("Retrieved all transfers from processor")
 
 	// Convert Put.io transfers to transmission format
 	torrents := make([]map[string]interface{}, 0, len(transfers))
@@ -163,8 +154,12 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
 			percentDone = putioProgress + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
 
-			// Only set status to completed/seeding if all files are downloaded locally
-			if ctx.State == 2 { // TransferLifecycleCompleted = 2
+			// Check if the transfer is in the Processed state
+			if ctx.State == 5 { // TransferLifecycleProcessed = 5
+				// For transfers that have been processed locally, show as 100% complete
+				percentDone = 1.0 // 100%
+				status = 6        // TR_STATUS_SEED (completed/seeding)
+			} else if ctx.State == 2 { // TransferLifecycleCompleted = 2
 				status = s.mapPutioStatus(t.Status)
 			} else {
 				// If not all files are downloaded, show as downloading
@@ -186,6 +181,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"id":             t.ID,
 			"hashString":     t.Hash,
 			"name":           t.Name,
+			"eta":            t.EstimatedTime,
 			"status":         status,
 			"downloadDir":    s.cfg.TargetDir,
 			"totalSize":      t.Size,

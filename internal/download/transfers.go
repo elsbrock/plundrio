@@ -3,6 +3,7 @@ package download
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/elsbrock/go-putio"
@@ -11,10 +12,11 @@ import (
 
 // TransferProcessor handles the processing of Put.io transfers
 type TransferProcessor struct {
-	manager   *Manager
-	transfers map[string][]*putio.Transfer // Status -> Transfers
-	folderID  int64
-	targetDir string
+	manager            *Manager
+	transfers          map[string][]*putio.Transfer // Status -> Transfers
+	processedTransfers sync.Map                     // map[int64]bool - Tracks transfers that have been processed locally
+	folderID           int64
+	targetDir          string
 }
 
 // GetTransfers returns a copy of all transfers for a given folder ID
@@ -33,10 +35,11 @@ func (p *TransferProcessor) GetTransfers() []*putio.Transfer {
 // newTransferProcessor creates a new transfer processor
 func newTransferProcessor(m *Manager) *TransferProcessor {
 	return &TransferProcessor{
-		manager:   m,
-		transfers: make(map[string][]*putio.Transfer),
-		folderID:  m.cfg.FolderID,
-		targetDir: m.cfg.TargetDir,
+		manager:            m,
+		transfers:          make(map[string][]*putio.Transfer),
+		processedTransfers: sync.Map{},
+		folderID:           m.cfg.FolderID,
+		targetDir:          m.cfg.TargetDir,
 	}
 }
 
@@ -345,6 +348,20 @@ func (p *TransferProcessor) processErroredTransfers() {
 				Msg("Failed to delete errored transfer")
 		}
 	}
+}
+
+// MarkTransferProcessed marks a transfer as processed locally
+func (p *TransferProcessor) MarkTransferProcessed(transferID int64) {
+	p.processedTransfers.Store(transferID, true)
+	log.Debug("transfers").
+		Int64("transfer_id", transferID).
+		Msg("Marked transfer as processed locally")
+}
+
+// IsTransferProcessed checks if a transfer has been processed locally
+func (p *TransferProcessor) IsTransferProcessed(transferID int64) bool {
+	_, processed := p.processedTransfers.Load(transferID)
+	return processed
 }
 
 // finalizeCompletedTransfers checks for transfers that are marked as completed in the
