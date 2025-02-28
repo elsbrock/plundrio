@@ -50,6 +50,14 @@ func (m *Manager) monitorTransfers() {
 	log.Debug("transfers").Msg("Starting transfer monitor")
 	processor := newTransferProcessor(m)
 
+	// Store the processor in the manager for access by other components
+	m.processor = processor
+
+	log.Debug("transfers").
+		Int64("folder_id", processor.folderID).
+		Str("target_dir", processor.targetDir).
+		Msg("Transfer processor initialized")
+
 	// Initial check
 	processor.checkTransfers()
 
@@ -77,6 +85,10 @@ func (p *TransferProcessor) checkTransfers() {
 		return
 	}
 
+	log.Debug("transfers").
+		Int("api_transfers_count", len(transfers)).
+		Msg("Retrieved transfers from API")
+
 	// Reset transfer status tracking
 	p.transfers = make(map[string][]*putio.Transfer)
 
@@ -93,11 +105,23 @@ func (p *TransferProcessor) checkTransfers() {
 		p.transfers[t.Status] = append(p.transfers[t.Status], t)
 	}
 
+	// Log the state of the transfers map after categorization
+	totalTransfersInMap := 0
+	for status, statusTransfers := range p.transfers {
+		totalTransfersInMap += len(statusTransfers)
+		log.Debug("transfers").
+			Str("status", status).
+			Int("count", len(statusTransfers)).
+			Msg("Transfers categorized by status")
+	}
+	log.Debug("transfers").
+		Int("total_transfers_in_map", totalTransfersInMap).
+		Msg("Total transfers added to map")
+
 	// Log transfer summary
 	p.logTransferSummary()
 
 	// Process transfers by status
-	p.processInProgressTransfers()
 	p.processReadyTransfers()
 	p.processErroredTransfers()
 
@@ -241,19 +265,6 @@ func (p *TransferProcessor) logAllTransfersDetails() {
 
 		// Log the transfer details with a message that includes the status
 		transferLogger.Msgf("Transfer details (%s)", t.Status)
-	}
-}
-
-// processInProgressTransfers logs details for transfers being downloaded
-func (p *TransferProcessor) processInProgressTransfers() {
-	for _, t := range p.transfers["DOWNLOADING"] {
-		log.Info("transfers").
-			Str("name", t.Name).
-			Float64("progress_percent", float64(t.PercentDone)).
-			Float64("size_mb", float64(t.Size)/(1024*1024)).
-			Float64("speed_mbps", float64(t.DownloadSpeed)/(1024*1024)).
-			Str("eta", formatETA(int(t.EstimatedTime))).
-			Msg("Transfer in progress")
 	}
 }
 

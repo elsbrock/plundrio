@@ -116,6 +116,22 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 	// Get transfers from the processor, which now keeps track of all transfers
 	// including completed ones that have been processed
 	processor := s.dlManager.GetTransferProcessor()
+
+	// Check if processor is nil
+	if processor == nil {
+		log.Error("rpc").
+			Str("operation", "torrent-get").
+			Msg("Transfer processor is nil")
+		return map[string]interface{}{
+			"torrents": []map[string]interface{}{},
+		}, nil
+	}
+
+	// Log processor details
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Msg("Using transfer processor")
+
 	transfers := processor.GetTransfers()
 
 	log.Debug("rpc").
