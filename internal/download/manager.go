@@ -74,7 +74,8 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 			return NewTransferNotFoundError(transferID)
 		}
 
-		// Delete source file and transfer from Put.io
+		// Delete only the source file from Put.io, but keep the transfer
+		// This allows *arr applications to see completed transfers
 		if err := m.client.DeleteFile(state.FileID); err != nil {
 			log.Error("cleanup").
 				Int64("transfer_id", transferID).
@@ -84,13 +85,10 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 			return err
 		}
 
-		if err := m.client.DeleteTransfer(transferID); err != nil {
-			log.Error("cleanup").
-				Int64("transfer_id", transferID).
-				Err(err).
-				Msg("Failed to delete transfer")
-			return err
-		}
+		// No longer delete the transfer - it will only be deleted when torrent-remove is called
+		log.Info("cleanup").
+			Int64("transfer_id", transferID).
+			Msg("Deleted source file but kept transfer for *arr applications")
 
 		return nil
 	})

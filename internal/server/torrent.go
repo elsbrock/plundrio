@@ -113,8 +113,20 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		Interface("fields", params.Fields).
 		Msg("Processing torrent-get request")
 
-	// Get transfers from processor
-	transfers := s.dlManager.GetTransferProcessor().GetTransfers()
+	// Get all transfers directly from put.io instead of just from the processor
+	putioTransfers, err := s.client.GetTransfers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transfers from put.io: %w", err)
+	}
+
+	// Filter transfers for our target folder
+	var transfers []*putio.Transfer
+	for _, t := range putioTransfers {
+		if t.SaveParentID == s.cfg.FolderID {
+			transfers = append(transfers, t)
+		}
+	}
+
 	log.Debug("rpc").
 		Str("operation", "torrent-get").
 		Int("all_transfers_count", len(transfers)).
@@ -141,11 +153,12 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		var percentDone float64
 		var status int
 
-		// Always map put.io progress to 0-50%
-		putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
-
-		// Check if we have a transfer context
+		// Check if we have a transfer context (transfer is being processed)
 		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
+			// For transfers being processed, use the 0-50% and 50-100% rule
+			// Always map put.io progress to 0-50%
+			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
+
 			// Add local download progress (50-100%) if files are being downloaded
 			localProgress := float64(ctx.CompletedFiles) / float64(ctx.TotalFiles)
 			percentDone = putioProgress + (localProgress * 0.5) // Maps 0-1 to 0.5-1.0
@@ -157,8 +170,14 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 				// If not all files are downloaded, show as downloading
 				status = 4 // TR_STATUS_DOWNLOAD
 			}
+		} else if t.Status == "COMPLETED" || t.Status == "SEEDING" {
+			// For transfers that are completed on put.io but have no corresponding entry in the processor
+			// (i.e., already downloaded), show as 100% complete with status "downloaded"
+			percentDone = 1.0 // 100%
+			status = 6        // TR_STATUS_SEED (completed/seeding)
 		} else {
-			// Only put.io progress available
+			// For other transfers not being processed, just use put.io progress (0-50%)
+			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
 			percentDone = putioProgress
 			status = s.mapPutioStatus(t.Status)
 		}
