@@ -197,3 +197,12 @@ func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
 
 	return allFiles, nil
 }
+
+// RetryTransfer retries a failed transfer
+func (c *Client) RetryTransfer(transferID int64) (*putio.Transfer, error) {
+	transfer, err := c.client.Transfers.Retry(c.ctx, transferID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retry transfer: %w", err)
+	}
+	return &transfer, nil
+}

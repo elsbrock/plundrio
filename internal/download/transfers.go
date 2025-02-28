@@ -15,6 +15,7 @@ type TransferProcessor struct {
 	manager            *Manager
 	transfers          map[string][]*putio.Transfer // Status -> Transfers
 	processedTransfers sync.Map                     // map[int64]bool - Tracks transfers that have been processed locally
+	retryAttempts      sync.Map                     // map[int64]int - Tracks retry attempts for errored transfers
 	folderID           int64
 	targetDir          string
 }
@@ -38,6 +39,7 @@ func newTransferProcessor(m *Manager) *TransferProcessor {
 		manager:            m,
 		transfers:          make(map[string][]*putio.Transfer),
 		processedTransfers: sync.Map{},
+		retryAttempts:      sync.Map{},
 		folderID:           m.cfg.FolderID,
 		targetDir:          m.cfg.TargetDir,
 	}
@@ -103,7 +105,7 @@ func (p *TransferProcessor) checkTransfers() {
 	p.finalizeCompletedTransfers()
 }
 
-// logTransferSummary logs counts of transfers in each status
+// logTransferSummary logs counts of transfers in each status and detailed information for all transfers
 func (p *TransferProcessor) logTransferSummary() {
 	counts := map[string]int{
 		"IN_QUEUE":    len(p.transfers["IN_QUEUE"]),
@@ -126,6 +128,121 @@ func (p *TransferProcessor) logTransferSummary() {
 		Int("completed", counts["COMPLETED"]).
 		Int("error", counts["ERROR"]).
 		Msg("Transfer status summary")
+
+	// Log detailed information for all transfers
+	p.logAllTransfersDetails()
+}
+
+// logAllTransfersDetails logs detailed information for all transfers
+func (p *TransferProcessor) logAllTransfersDetails() {
+	allTransfers := p.GetTransfers()
+	if len(allTransfers) == 0 {
+		log.Debug("transfers").Msg("No transfers found for detailed logging")
+		return
+	}
+
+	log.Info("transfers").Msg("Detailed transfer information:")
+
+	for _, t := range allTransfers {
+		// Create a logger with common fields for all transfers
+		transferLogger := log.Info("transfers").
+			Int64("id", t.ID).
+			Str("name", t.Name).
+			Str("status", t.Status).
+			Int64("save_parent_id", t.SaveParentID).
+			Int64("file_id", t.FileID).
+			Int("size", t.Size).
+			Str("source", t.Source).
+			Str("type", t.Type).
+			Str("status_message", t.StatusMessage).
+			Int("availability", t.Availability).
+			Bool("is_private", t.IsPrivate)
+
+		// Add peer information if available
+		if t.PeersConnected > 0 || t.PeersSendingToUs > 0 || t.PeersGettingFromUs > 0 {
+			transferLogger = transferLogger.
+				Int("peers_connected", t.PeersConnected).
+				Int("peers_sending_to_us", t.PeersSendingToUs).
+				Int("peers_getting_from_us", t.PeersGettingFromUs)
+		}
+
+		// Add speed information if available
+		if t.DownloadSpeed > 0 || t.UploadSpeed > 0 {
+			transferLogger = transferLogger.
+				Int("download_speed", t.DownloadSpeed).
+				Int("upload_speed", t.UploadSpeed).
+				Int64("downloaded", t.Downloaded).
+				Int64("uploaded", t.Uploaded)
+		}
+
+		// Add progress information if available
+		if t.PercentDone > 0 && t.PercentDone < 100 {
+			transferLogger = transferLogger.
+				Int("percent_done", t.PercentDone).
+				Int64("estimated_time", t.EstimatedTime)
+		}
+
+		// Add seeding information if available
+		if t.SecondsSeeding > 0 {
+			transferLogger = transferLogger.Int("seconds_seeding", t.SecondsSeeding)
+		}
+
+		// Add tracker information if available
+		if t.Trackers != "" {
+			transferLogger = transferLogger.Str("trackers", t.Trackers)
+		}
+		if t.TrackerMessage != "" {
+			transferLogger = transferLogger.Str("tracker_message", t.TrackerMessage)
+		}
+
+		// Add torrent information if available
+		if t.MagnetURI != "" {
+			transferLogger = transferLogger.Str("magnet_uri", t.MagnetURI)
+		}
+		if t.TorrentLink != "" {
+			transferLogger = transferLogger.Str("torrent_link", t.TorrentLink)
+		}
+		if t.CreatedTorrent {
+			transferLogger = transferLogger.Bool("created_torrent", t.CreatedTorrent)
+		}
+
+		// Add error information if available
+		if t.ErrorMessage != "" {
+			transferLogger = transferLogger.Str("error_message", t.ErrorMessage)
+		}
+
+		// Add timestamps if available
+		if t.CreatedAt != nil {
+			transferLogger = transferLogger.Interface("created_at", t.CreatedAt)
+		}
+		if t.FinishedAt != nil {
+			transferLogger = transferLogger.Interface("finished_at", t.FinishedAt)
+		}
+
+		// Add other miscellaneous fields
+		if t.ClientIP != "" {
+			transferLogger = transferLogger.Str("client_ip", t.ClientIP)
+		}
+		if t.CallbackURL != "" {
+			transferLogger = transferLogger.Str("callback_url", t.CallbackURL)
+		}
+		if t.Extract {
+			transferLogger = transferLogger.Bool("extract", t.Extract)
+		}
+		if t.DownloadID != 0 {
+			transferLogger = transferLogger.Int64("download_id", t.DownloadID)
+		}
+		if t.SubscriptionID != 0 {
+			transferLogger = transferLogger.Int("subscription_id", t.SubscriptionID)
+		}
+
+		// Check if this transfer is being processed locally
+		_, processed := p.processedTransfers.Load(t.ID)
+		transferLogger = transferLogger.Bool("processed_locally", processed)
+
+		// Log the transfer details with a message that includes the status
+		transferLogger.Msgf("Transfer details (%s)", t.Status)
+	}
 }
 
 // processInProgressTransfers logs details for transfers being downloaded
@@ -331,21 +448,67 @@ func (p *TransferProcessor) initializeTransfer(transfer *putio.Transfer, filesTo
 	return true
 }
 
-// processErroredTransfers handles failed transfers
+// processErroredTransfers handles failed transfers with retry logic
 func (p *TransferProcessor) processErroredTransfers() {
+	const maxRetryAttempts = 3 // Maximum number of retry attempts
+
 	for _, transfer := range p.transfers["ERROR"] {
-		log.Error("transfers").
+		// Get current retry count
+		retryCountValue, exists := p.retryAttempts.Load(transfer.ID)
+		retryCount := 0
+		if exists {
+			retryCount = retryCountValue.(int)
+		}
+
+		// Log the error with retry information
+		logger := log.Error("transfers").
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
 			Str("error", transfer.ErrorMessage).
-			Msg("Transfer errored")
+			Int("retry_count", retryCount)
 
-		if err := p.manager.client.DeleteTransfer(transfer.ID); err != nil {
-			log.Error("transfers").
-				Str("name", transfer.Name).
-				Int64("id", transfer.ID).
-				Err(err).
-				Msg("Failed to delete errored transfer")
+		// Check if we should retry or delete
+		if retryCount < maxRetryAttempts {
+			// Increment retry count
+			p.retryAttempts.Store(transfer.ID, retryCount+1)
+
+			// Log retry attempt
+			logger.Msgf("Transfer errored, retrying (attempt %d of %d)", retryCount+1, maxRetryAttempts)
+
+			// Attempt to retry the transfer
+			retried, err := p.manager.client.RetryTransfer(transfer.ID)
+			if err != nil {
+				log.Error("transfers").
+					Str("name", transfer.Name).
+					Int64("id", transfer.ID).
+					Err(err).
+					Msgf("Failed to retry transfer (attempt %d of %d)", retryCount+1, maxRetryAttempts)
+			} else {
+				log.Info("transfers").
+					Str("name", transfer.Name).
+					Int64("id", transfer.ID).
+					Str("new_status", retried.Status).
+					Msgf("Successfully retried transfer (attempt %d of %d)", retryCount+1, maxRetryAttempts)
+			}
+		} else {
+			// Log that we're giving up after max retries
+			logger.Msgf("Transfer errored, giving up after %d retry attempts", maxRetryAttempts)
+
+			// Delete the transfer after max retries
+			if err := p.manager.client.DeleteTransfer(transfer.ID); err != nil {
+				log.Error("transfers").
+					Str("name", transfer.Name).
+					Int64("id", transfer.ID).
+					Err(err).
+					Msg("Failed to delete errored transfer after max retries")
+			} else {
+				// Clear retry counter after successful deletion
+				p.retryAttempts.Delete(transfer.ID)
+				log.Info("transfers").
+					Str("name", transfer.Name).
+					Int64("id", transfer.ID).
+					Msg("Deleted errored transfer after max retries")
+			}
 		}
 	}
 }

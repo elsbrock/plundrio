@@ -19,6 +19,7 @@ automatically added to put.io and downloaded to the local disk once complete.
 
 - [🚀 Features](#-features)
 - [🔧 How It Works](#-how-it-works)
+  - [Transfer State Tracking for \*arr Integration](#transfer-state-tracking-for-arr-integration)
 - [📋 Prerequisites](#-prerequisites)
 - [📦 Installation](#-installation)
   - [Using Go](#using-go)
@@ -55,6 +56,8 @@ automatically added to put.io and downloaded to the local disk once complete.
 - 🛠️ Easy configuration and setup with multiple configuration methods
 - 🧹 Automatic cleanup of completed transfers
 - 🔒 Secure OAuth token handling for put.io authentication
+- 📊 Comprehensive transfer logging with detailed metadata for all transfers
+- 🔁 Automatic retry of failed transfers with configurable retry attempts
 
 ## 🔧 How It Works
 
@@ -75,6 +78,24 @@ graph LR
 4. Once a transfer completes, it automatically downloads all files to your local folder
 5. Downloads are parallelized with multiple workers to optimize speed
 6. Transfers and their files are cleaned up when all files are present locally and the transfer finished seeding
+
+### Transfer State Tracking for *arr Integration
+
+plundrio implements a specialized state tracking system to ensure seamless integration with *arr applications:
+
+1. **Transfer Record Preservation**:
+   - When a transfer completes and files are downloaded, plundrio removes the files from put.io but keeps the transfer record
+   - This transfer record acts as a central entity that *arr applications can query to determine completion status
+   - Transfers are only fully removed when explicitly requested via torrent-remove RPC call
+
+2. **Progress Calculation**:
+   - put.io download progress (0-100%) is mapped to 0-50% of the total progress
+   - Local download progress (0-100%) is mapped to 50-100% of the total progress
+   - For transfers being processed: progress = (put.io_progress / 2) + (local_progress * 0.5)
+   - For completed transfers: progress = 100% with "seeding" status
+   - This two-phase progress tracking gives *arr applications accurate visibility into both remote and local download status
+
+This approach ensures reliable integration with *arr applications while optimizing put.io storage usage.
 
 ## 📋 Prerequisites
 
