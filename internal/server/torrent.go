@@ -106,8 +106,19 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	// Log input parameters
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Interface("ids", params.IDs).
+		Interface("fields", params.Fields).
+		Msg("Processing torrent-get request")
+
 	// Get transfers from processor
 	allTransfers := s.dlManager.GetTransferProcessor().GetTransfers()
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Int("all_transfers_count", len(allTransfers)).
+		Msg("Retrieved all transfers")
 
 	// Filter for completed or seeding transfers
 	var transfers []*putio.Transfer
@@ -116,6 +127,10 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			transfers = append(transfers, t)
 		}
 	}
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Int("filtered_transfers_count", len(transfers)).
+		Msg("Filtered for completed/seeding transfers")
 
 	// Convert Put.io transfers to transmission format
 	torrents := make([]map[string]interface{}, 0, len(transfers))
@@ -159,7 +174,8 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			percentDone = putioProgress
 			status = s.mapPutioStatus(t.Status)
 		}
-		torrents = append(torrents, map[string]interface{}{
+
+		torrentInfo := map[string]interface{}{
 			"id":             t.ID,
 			"hashString":     t.Hash,
 			"name":           t.Name,
@@ -172,15 +188,48 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"percentDone":    percentDone,
 			"rateDownload":   t.DownloadSpeed,
 			"rateUpload":     t.UploadSpeed,
-			"uploadRatio":    float64(t.Uploaded) / float64(t.Size),
-			"error":          t.ErrorMessage != "",
-			"errorString":    t.ErrorMessage,
-		})
+			"uploadRatio": func() float64 {
+				if t.Size > 0 {
+					return float64(t.Uploaded) / float64(t.Size)
+				}
+				return 0
+			}(),
+			"error":       t.ErrorMessage != "",
+			"errorString": t.ErrorMessage,
+		}
+
+		torrents = append(torrents, torrentInfo)
+
+		// Log each torrent being added to the response
+		log.Debug("rpc").
+			Str("operation", "torrent-get").
+			Int64("id", t.ID).
+			Str("hash", t.Hash).
+			Str("name", t.Name).
+			Str("status", t.Status).
+			Int64("size", t.Size).
+			Float64("percent_done", percentDone).
+			Msg("Added torrent to response")
 	}
 
-	return map[string]interface{}{
+	// Log the final count of torrents in the response
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Int("torrents_count", len(torrents)).
+		Msg("Returning torrents")
+
+	result := map[string]interface{}{
 		"torrents": torrents,
-	}, nil
+	}
+
+	// Log the final response structure
+	resultBytes, _ := json.Marshal(result)
+	log.Debug("rpc").
+		Str("operation", "torrent-get").
+		Str("result", string(resultBytes)).
+		Msg("Final result structure")
+
+	return result, nil
 }
 
 // handleTorrentRemove processes torrent-remove requests
