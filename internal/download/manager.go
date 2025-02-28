@@ -88,7 +88,7 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		// No longer delete the transfer - it will only be deleted when torrent-remove is called
 		log.Info("cleanup").
 			Int64("transfer_id", transferID).
-			Msg("Deleted source file but kept transfer for *arr applications")
+			Msg("Deleted source file")
 
 		return nil
 	})

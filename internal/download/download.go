@@ -3,12 +3,14 @@ package download
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	grab "github.com/cavaliergopher/grab/v3"
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
@@ -119,6 +121,21 @@ func isTransientError(err error) bool {
 		}
 	}
 
+	// Check for grab errors
+	if err.Error() == "connection reset" ||
+		err.Error() == "connection refused" ||
+		err.Error() == "i/o timeout" {
+		return true
+	}
+
+	// Check for specific grab HTTP errors
+	if strings.Contains(err.Error(), "429") || // Too Many Requests
+		strings.Contains(err.Error(), "503") || // Service Unavailable
+		strings.Contains(err.Error(), "504") || // Gateway Timeout
+		strings.Contains(err.Error(), "502") { // Bad Gateway
+		return true
+	}
+
 	return false
 }
 
@@ -132,9 +149,9 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP error: %s", e.Status)
 }
 
-// downloadFile downloads a file from Put.io to the target directory
+// downloadFile downloads a file from Put.io to the target directory using grab
 func (m *Manager) downloadFile(state *DownloadState) error {
-	// Create a context that's cancelled when either stopChan is closed or there's an error
+	// Create a context that's cancelled when stopChan is closed
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Set up cancellation from stopChan
@@ -154,148 +171,92 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return fmt.Errorf("failed to get download URL: %w", err)
 	}
 
-	// Set up download resources
-	downloadCtx, err := m.setupDownloadResources(ctx, state, url)
+	// Prepare target path
+	targetPath := filepath.Join(m.cfg.TargetDir, state.Name)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Create grab client with our configuration
+	client := grab.NewClient()
+
+	// Create grab request
+	req, err := grab.NewRequest(targetPath, url)
 	if err != nil {
-		return fmt.Errorf("failed to setup download resources: %w", err)
+		return fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	// Start the download operation
-	err = m.performDownload(downloadCtx)
+	// Set request context for cancellation
+	req = req.WithContext(ctx)
 
-	// Always clean up resources
-	downloadCtx.cleanup()
+	// Set request headers
+	req.HTTPRequest.Header.Set("User-Agent", "plundrio/1.0")
+	req.HTTPRequest.Header.Set("Accept", "*/*")
+	req.HTTPRequest.Header.Set("Connection", "keep-alive")
 
-	// Handle errors after cleanup
-	if err != nil {
-		if ctx.Err() != nil {
-			return NewDownloadCancelledError(state.Name, "download stopped")
-		}
-		return fmt.Errorf("download operation failed: %w", err)
-	}
+	// Start the download
+	log.Info("download").
+		Str("file_name", state.Name).
+		Str("target_path", targetPath).
+		Msg("Starting download with grab")
 
-	return nil
-}
+	// Execute the request
+	resp := client.Do(req)
 
-// downloadContext holds all resources needed for a download operation
-type downloadContext struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	state      *DownloadState
-	url        string
-	tempFile   *os.File
-	tempPath   string
-	targetPath string
-	reader     *progressReader
-	cleanup    func()
-	offset     int64
-}
-
-// setupDownloadResources prepares all resources needed for download
-func (m *Manager) setupDownloadResources(ctx context.Context, state *DownloadState, url string) (*downloadContext, error) {
-	downloadCtx := &downloadContext{
-		state: state,
-		url:   url,
-	}
-
-	// Create download context with cancellation
-	downloadCtx.ctx, downloadCtx.cancel = context.WithCancel(ctx)
-
-	// Prepare file resources
-	targetPath, tempPath, tempFile, startOffset, err := m.prepareDownloadFile(state)
-	if err != nil {
-		return nil, err
-	}
-
-	downloadCtx.tempFile = tempFile
-	downloadCtx.tempPath = tempPath
-	downloadCtx.targetPath = targetPath
-	downloadCtx.offset = startOffset
-
-	// Setup cleanup function
-	downloadCtx.cleanup = func() {
-		downloadCtx.cancel()
-		if err := tempFile.Close(); err != nil {
-			log.Error("download").
-				Str("file_name", state.Name).
-				Err(err).
-				Msg("Error closing temp file")
-		}
-	}
-
-	return downloadCtx, nil
-}
-
-// performDownload handles the actual download operation
-func (m *Manager) performDownload(downloadCtx *downloadContext) error {
-	// Create and execute request
-	req, err := m.createDownloadRequest(downloadCtx.ctx, downloadCtx.url, downloadCtx.offset)
-	if err != nil {
-		return err
-	}
-
-	client := m.createHTTPClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to start download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return &HTTPError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-		}
-	}
-
-	// Handle download completion
-	return m.handleDownloadCompletion(downloadCtx, resp)
-}
-
-// handleDownloadCompletion manages the completion of a download
-func (m *Manager) handleDownloadCompletion(downloadCtx *downloadContext, resp *http.Response) error {
-	state := downloadCtx.state
-	totalSize := resp.ContentLength
-
-	if totalSize <= 0 {
-		return NewInvalidContentLengthError(state.Name, totalSize)
-	}
-
-	// Initialize progress tracking
+	// Set up progress tracking
+	done := make(chan struct{})
 	progressTicker := time.NewTicker(m.dlConfig.ProgressUpdateInterval)
 	defer progressTicker.Stop()
 
-	// Create completion channels
-	done := make(chan struct{})
-	copyDone := make(chan error, 1)
+	// Initialize state
+	state.mu.Lock()
+	state.downloaded = 0
+	state.Progress = 0
+	state.LastProgress = time.Now()
+	state.mu.Unlock()
 
-	// Setup progress reader
-	downloadCtx.reader = m.setupProgressTracking(state, resp.Body, totalSize)
+	// Configure the request
+	m.configureGrabRequest(req)
 
-	// Start progress monitoring
-	m.monitorDownloadProgress(downloadCtx.ctx, state, downloadCtx.reader, totalSize, done, progressTicker)
-	m.monitorDownloadStall(downloadCtx.ctx, state, totalSize, downloadCtx.cancel)
-
-	// Start the copy operation
-	go m.copyWithProgress(downloadCtx, resp.Body, copyDone)
+	// Monitor download progress
+	go m.monitorGrabDownloadProgress(ctx, state, resp, done, progressTicker)
 
 	// Wait for completion or cancellation
 	select {
-	case err := <-copyDone:
-		if err != nil {
+	case <-resp.Done:
+		close(done)
+		// Check for errors
+		if err := resp.Err(); err != nil {
+			if ctx.Err() != nil {
+				return NewDownloadCancelledError(state.Name, "download stopped")
+			}
 			return fmt.Errorf("download failed: %w", err)
 		}
-		// For successful downloads, don't log cancellation
-		downloadCtx.cleanup = func() {} // Replace cleanup with no-op for successful downloads
-		return m.finalizeDownload(state, downloadCtx.reader, downloadCtx.tempFile, downloadCtx.tempPath, downloadCtx.targetPath, totalSize)
-	case <-downloadCtx.ctx.Done():
+
+		// Verify file completeness
+		if !resp.IsComplete() {
+			return fmt.Errorf("download incomplete: %s", state.Name)
+		}
+
+		// Log completion
+		elapsed := time.Since(state.StartTime).Seconds()
+		totalSize := resp.Size()
+		averageSpeedMBps := (float64(totalSize) / 1024 / 1024) / elapsed
+
+		log.Info("download").
+			Str("file_name", state.Name).
+			Float64("size_mb", float64(totalSize)/1024/1024).
+			Float64("speed_mbps", averageSpeedMBps).
+			Dur("duration", time.Since(state.StartTime)).
+			Str("target_path", targetPath).
+			Msg("Download completed")
+
+		return nil
+
+	case <-ctx.Done():
+		close(done)
 		return NewDownloadCancelledError(state.Name, "context cancelled")
 	}
 }
 
-// copyWithProgress copies data with progress tracking
-func (m *Manager) copyWithProgress(downloadCtx *downloadContext, src io.Reader, copyDone chan<- error) {
-	defer close(copyDone)
-	_, err := io.Copy(downloadCtx.tempFile, downloadCtx.reader)
-	copyDone <- err
-}
+// No longer needed with grab library

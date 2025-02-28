@@ -53,7 +53,7 @@ automatically added to put.io and downloaded to the local disk once complete.
 - 🌐 Stateless architecture; multiple instances per put.io account supported
 - ⚡ Fast and efficient downloads from put.io (with resume support)
 - 🔄 Parallel downloads with configurable worker count to maximize bandwidth
-- 🛠️ Easy configuration and setup with multiple configuration methods
+- �️ Easy configuration and setup with multiple configuration methods
 - 🧹 Automatic cleanup of completed transfers
 - 🔒 Secure OAuth token handling for put.io authentication
 - 📊 Comprehensive transfer logging with detailed metadata for all transfers
@@ -302,7 +302,7 @@ plundrio get-token
 
 - **Trash Bin Management**: We recommend turning off the trash bin in your put.io settings. This helps keep your put.io account clean and saves space. The trash cannot be deleted programmatically.
 
-- **Download Speed Optimization**: Downloads are throttled by put.io to 20MB/s per connection. This means that if you have multiple downloads running at the same time, they will each download at 20MB/s. The default worker count of 4 allows up to 80MB/s total throughput.
+- **Download Speed Optimization**: Downloads are optimized using the grab library for maximum efficiency. The default worker count of 4 allows for parallel downloads to maximize your available bandwidth.
 
 - **Worker Count Tuning**:
   - For faster internet connections (100Mbps+), consider increasing worker count to 5-8

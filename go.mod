@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/cavaliergopher/grab/v3 v3.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
