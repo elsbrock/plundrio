@@ -152,8 +152,6 @@ func (p *TransferProcessor) logAllTransfersDetails() {
 		return
 	}
 
-	log.Info("transfers").Msg("Detailed transfer information:")
-
 	for _, t := range allTransfers {
 		// Create a logger with common fields for all transfers
 		transferLogger := log.Info("transfers").
@@ -343,7 +341,7 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 // handleTransferError processes transfer errors appropriately
 func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err error) {
 	if putioErr, ok := err.(*putio.ErrorResponse); ok && putioErr.Type == "NotFound" {
-		log.Info("transfers").
+		log.Debug("transfers").
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
 			Msg("Files no longer exist on Put.io, cleaning up")

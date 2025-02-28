@@ -2,13 +2,14 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
+
+	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // sendError sends an error response
 func (s *Server) sendError(w http.ResponseWriter, err error) {
-	log.Printf("Error processing request: %v", err)
+	log.Error("server").Msgf("Error processing request: %v", err)
 
 	resp := struct {
 		Result  string `json:"result"`
@@ -20,7 +21,7 @@ func (s *Server) sendError(w http.ResponseWriter, err error) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("Failed to encode error response: %v", err)
+		log.Error("server").Msgf("Failed to encode error response: %v", err)
 	}
 }
 
@@ -39,11 +40,11 @@ func (s *Server) sendResponse(w http.ResponseWriter, tag interface{}, result int
 
 	// Log the response for debugging
 	respBytes, _ := json.Marshal(resp)
-	log.Printf("Sending response: %s", string(respBytes))
+	log.Debug("server").Msgf("Sending response: %s", string(respBytes))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Transmission-Session-Id", "123") // Ensure session ID is always sent
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+		log.Error("server").Msgf("Failed to encode response: %v", err)
 	}
 }

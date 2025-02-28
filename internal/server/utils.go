@@ -2,7 +2,8 @@ package server
 
 import (
 	"fmt"
-	"log"
+
+	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // mapPutioStatus converts Put.io transfer status to transmission status
@@ -39,7 +40,7 @@ func (s *Server) checkDiskQuota() (bool, error) {
 	isOverQuota := usagePercent >= 95
 
 	if isOverQuota && !s.quotaWarning {
-		log.Printf("WARNING: Put.io account is over quota (%.1f%% used)", usagePercent)
+		log.Warn("server").Msgf("Put.io account is over quota (%.1f%% used)", usagePercent)
 		s.quotaWarning = true
 	} else if !isOverQuota && s.quotaWarning {
 		// Reset warning when usage drops
