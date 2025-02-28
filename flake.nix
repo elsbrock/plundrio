@@ -103,11 +103,13 @@
                 Type = "simple";
                 User = cfg.user;
                 Group = cfg.group;
+                Environment = [
+                  "PLDR_TOKEN=${lib.escapeShellArg cfg.oauthToken}"
+                ];
                 ExecStart = ''
                   ${cfg.package}/bin/plundrio run \
                     --target ${lib.escapeShellArg cfg.targetDir} \
                     --folder ${lib.escapeShellArg cfg.putioFolder} \
-                    --token ${lib.escapeShellArg cfg.oauthToken} \
                     --listen ${lib.escapeShellArg cfg.listenAddr} \
                     --workers ${toString cfg.workerCount} \
                     --log-level ${cfg.logLevel}
