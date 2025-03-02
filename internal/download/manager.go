@@ -33,16 +33,6 @@ type Manager struct {
 	processor *TransferProcessor // Handles transfer processing
 }
 
-// GetTransferProcessor returns the manager's transfer processor
-func (m *Manager) GetTransferProcessor() *TransferProcessor {
-	return m.processor
-}
-
-// GetCoordinator returns the manager's transfer coordinator
-func (m *Manager) GetCoordinator() *TransferCoordinator {
-	return m.coordinator
-}
-
 // New creates a new download manager
 func New(cfg *config.Config, client *api.Client) *Manager {
 	// Get default download configuration
@@ -155,6 +145,16 @@ func (m *Manager) Stop() {
 	m.workerWg.Wait()
 	// Wait for monitor to finish
 	m.monitorWg.Wait()
+}
+
+// GetTransferProcessor returns the manager's transfer processor
+func (m *Manager) GetTransferProcessor() *TransferProcessor {
+	return m.processor
+}
+
+// GetCoordinator returns the manager's transfer coordinator
+func (m *Manager) GetCoordinator() *TransferCoordinator {
+	return m.coordinator
 }
 
 // QueueDownload adds a download job to the queue if not already downloading
