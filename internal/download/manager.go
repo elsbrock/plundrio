@@ -2,6 +2,7 @@ package download
 
 import (
 	"sync"
+	"time"
 
 	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
@@ -30,7 +31,8 @@ type Manager struct {
 	mu      sync.Mutex // protects job queueing
 	running bool       // tracks if manager is running
 
-	processor *TransferProcessor // Handles transfer processing
+	processor  *TransferProcessor // Handles transfer processing
+	rpcHandler *RPCHandler        // Handles RPC requests
 }
 
 // New creates a new download manager
@@ -42,6 +44,42 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 	workerCount := cfg.WorkerCount
 	if workerCount <= 0 {
 		workerCount = dlConfig.DefaultWorkerCount
+	}
+
+	// Parse and apply other configuration parameters if provided
+	if cfg.TransferCheckInterval != "" {
+		if duration, err := time.ParseDuration(cfg.TransferCheckInterval); err == nil {
+			dlConfig.TransferCheckInterval = duration
+			log.Debug("config").
+				Str("transfer_check_interval", cfg.TransferCheckInterval).
+				Msg("Using custom transfer check interval")
+		} else {
+			log.Warn("config").
+				Str("transfer_check_interval", cfg.TransferCheckInterval).
+				Err(err).
+				Msg("Invalid transfer check interval, using default")
+		}
+	}
+
+	if cfg.SeedingTimeThreshold != "" {
+		if duration, err := time.ParseDuration(cfg.SeedingTimeThreshold); err == nil {
+			dlConfig.SeedingTimeThreshold = duration
+			log.Debug("config").
+				Str("seeding_time_threshold", cfg.SeedingTimeThreshold).
+				Msg("Using custom seeding time threshold")
+		} else {
+			log.Warn("config").
+				Str("seeding_time_threshold", cfg.SeedingTimeThreshold).
+				Err(err).
+				Msg("Invalid seeding time threshold, using default")
+		}
+	}
+
+	if cfg.MaxRetryAttempts > 0 {
+		dlConfig.MaxRetryAttempts = cfg.MaxRetryAttempts
+		log.Debug("config").
+			Int("max_retry_attempts", cfg.MaxRetryAttempts).
+			Msg("Using custom max retry attempts")
 	}
 
 	m := &Manager{
@@ -56,6 +94,9 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 	// Initialize coordinator and processor
 	m.coordinator = NewTransferCoordinator(m)
 	m.processor = newTransferProcessor(m)
+
+	// Initialize RPC handler after processor is created
+	m.rpcHandler = NewRPCHandler(m.processor)
 
 	// Register cleanup hooks
 	m.coordinator.RegisterCleanupHook(func(transferID int64) error {
@@ -152,9 +193,9 @@ func (m *Manager) GetTransferProcessor() *TransferProcessor {
 	return m.processor
 }
 
-// GetCoordinator returns the manager's transfer coordinator
-func (m *Manager) GetCoordinator() *TransferCoordinator {
-	return m.coordinator
+// GetRPCHandler returns the manager's RPC handler
+func (m *Manager) GetRPCHandler() *RPCHandler {
+	return m.rpcHandler
 }
 
 // QueueDownload adds a download job to the queue if not already downloading
@@ -231,7 +272,7 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 	// Now that the counter has been incremented, remove the file from active tracking
 	m.activeFiles.Delete(fileID)
 
-	// Check if the transfer is marked as completed
+	// Check if the transfer is ready for completion
 	ctx, ok := m.coordinator.GetTransferContext(transferID)
 	if !ok {
 		log.Debug("transfers").
@@ -240,23 +281,25 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 		return // Transfer context already gone
 	}
 
-	// Get transfer state under lock
+	// Get transfer info under lock
 	ctx.mu.RLock()
-	isCompleted := ctx.State == TransferLifecycleCompleted
 	totalFiles := ctx.TotalFiles
 	completedFiles := ctx.CompletedFiles
+	failedFiles := ctx.FailedFiles
+	isProcessed := ctx.Processed
 	ctx.mu.RUnlock()
 
 	// Log transfer state
 	log.Debug("transfers").
 		Int64("id", transferID).
 		Int32("completed_files", completedFiles).
+		Int32("failed_files", failedFiles).
 		Int32("total_files", totalFiles).
-		Bool("is_completed_state", isCompleted).
+		Bool("is_processed", isProcessed == Processed).
 		Msg("Transfer completion status")
 
-	// If the transfer is in completed state, check if all downloads are done
-	if isCompleted {
+	// Check if all files are completed and the transfer is not yet processed
+	if completedFiles+failedFiles >= totalFiles && failedFiles == 0 && isProcessed == NotProcessed {
 		// Count active files for this transfer
 		activeCount := 0
 		m.activeFiles.Range(func(key, value interface{}) bool {
@@ -283,6 +326,14 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 					Int64("id", transferID).
 					Err(err).
 					Msg("Failed to finalize completed transfer")
+			} else {
+				// Update the transfer cache with the completed status
+				if processor := m.GetTransferProcessor(); processor != nil {
+					if processor.transferCache != nil {
+						// Update the progress in the cache
+						processor.transferCache.UpdateTransferProgress(transferID, ctx.DownloadedSize)
+					}
+				}
 			}
 		}
 	}

@@ -18,6 +18,8 @@ type TransferProcessor struct {
 	retryAttempts      sync.Map                     // map[int64]int - Tracks retry attempts for errored transfers
 	folderID           int64
 	targetDir          string
+	transferCache      *TransferCacheImpl   // Cache for transfer information
+	progressTracker    *ProgressTrackerImpl // Tracker for progress calculation
 }
 
 // GetTransfers returns a copy of all transfers for a given folder ID
@@ -35,7 +37,7 @@ func (p *TransferProcessor) GetTransfers() []*putio.Transfer {
 
 // newTransferProcessor creates a new transfer processor
 func newTransferProcessor(m *Manager) *TransferProcessor {
-	return &TransferProcessor{
+	processor := &TransferProcessor{
 		manager:            m,
 		transfers:          make(map[string][]*putio.Transfer),
 		processedTransfers: sync.Map{},
@@ -43,6 +45,14 @@ func newTransferProcessor(m *Manager) *TransferProcessor {
 		folderID:           m.cfg.FolderID,
 		targetDir:          m.cfg.TargetDir,
 	}
+
+	// Create progress tracker
+	processor.progressTracker = NewProgressTracker(processor, m.coordinator, m.dlConfig)
+
+	// Create transfer cache
+	processor.transferCache = NewTransferCache(m.client, m.dlConfig, processor.progressTracker)
+
+	return processor
 }
 
 // monitorTransfers periodically checks for completed transfers
@@ -79,6 +89,13 @@ func (m *Manager) monitorTransfers() {
 func (p *TransferProcessor) checkTransfers() {
 	log.Debug("transfers").Msg("Checking transfers")
 
+	// Update the transfer cache
+	if err := p.transferCache.UpdateCache(); err != nil {
+		log.Error("transfers").Err(err).Msg("Failed to update transfer cache")
+		return
+	}
+
+	// Get transfers from the API
 	transfers, err := p.manager.client.GetTransfers()
 	if err != nil {
 		log.Error("transfers").Err(err).Msg("Failed to get transfers")
@@ -112,7 +129,7 @@ func (p *TransferProcessor) checkTransfers() {
 	p.processReadyTransfers()
 	p.processErroredTransfers()
 
-	// Check for transfers that are in "Completed" state but haven't been fully cleaned up
+	// Check for transfers that have all files completed but haven't been fully processed
 	p.finalizeCompletedTransfers()
 }
 
@@ -255,9 +272,8 @@ func (p *TransferProcessor) logAllTransfersDetails() {
 
 // processReadyTransfers handles completed and seeding transfers
 func (p *TransferProcessor) processReadyTransfers() {
-	readyTransfers := append(p.transfers["COMPLETED"], p.transfers["SEEDING"]...)
-
-	for _, transfer := range readyTransfers {
+	// Process completed transfers
+	for _, transfer := range p.transfers["COMPLETED"] {
 		select {
 		case <-p.manager.stopChan:
 			log.Debug("transfers").Msg("Stopping transfer processing")
@@ -269,6 +285,86 @@ func (p *TransferProcessor) processReadyTransfers() {
 			p.startTransferProcessing(transfer)
 		}
 	}
+
+	// Process seeding transfers
+	for _, transfer := range p.transfers["SEEDING"] {
+		select {
+		case <-p.manager.stopChan:
+			log.Debug("transfers").Msg("Stopping transfer processing")
+			return
+		default:
+			// Check if the transfer has seeded long enough
+			if p.shouldCancelSeedingTransfer(transfer) {
+				p.cancelSeedingTransfer(transfer)
+				continue
+			}
+
+			// If not being processed and not seeded long enough, process it
+			if !p.isTransferBeingProcessed(transfer.ID) {
+				p.startTransferProcessing(transfer)
+			}
+		}
+	}
+}
+
+// shouldCancelSeedingTransfer checks if a seeding transfer has seeded long enough
+func (p *TransferProcessor) shouldCancelSeedingTransfer(transfer *putio.Transfer) bool {
+	// If the transfer has no seeding time, don't cancel it
+	if transfer.SecondsSeeding <= 0 {
+		return false
+	}
+
+	// Convert seconds to duration
+	seedingDuration := time.Duration(transfer.SecondsSeeding) * time.Second
+
+	// Check if it has seeded longer than the threshold
+	if seedingDuration >= p.manager.dlConfig.SeedingTimeThreshold {
+		log.Info("transfers").
+			Str("name", transfer.Name).
+			Int64("id", transfer.ID).
+			Int("seconds_seeding", transfer.SecondsSeeding).
+			Str("threshold", p.manager.dlConfig.SeedingTimeThreshold.String()).
+			Msg("Transfer has seeded long enough, will be cancelled")
+		return true
+	}
+
+	log.Debug("transfers").
+		Str("name", transfer.Name).
+		Int64("id", transfer.ID).
+		Int("seconds_seeding", transfer.SecondsSeeding).
+		Str("threshold", p.manager.dlConfig.SeedingTimeThreshold.String()).
+		Msg("Transfer still seeding, not yet reached threshold")
+
+	return false
+}
+
+// cancelSeedingTransfer cancels a seeding transfer
+func (p *TransferProcessor) cancelSeedingTransfer(transfer *putio.Transfer) {
+	log.Info("transfers").
+		Str("name", transfer.Name).
+		Int64("id", transfer.ID).
+		Int("seconds_seeding", transfer.SecondsSeeding).
+		Msg("Cancelling seeding transfer that has seeded long enough")
+
+	// Cancel the transfer
+	if err := p.manager.client.DeleteTransfer(transfer.ID); err != nil {
+		log.Error("transfers").
+			Str("name", transfer.Name).
+			Int64("id", transfer.ID).
+			Err(err).
+			Msg("Failed to cancel seeding transfer")
+		return
+	}
+
+	// Remove the transfer from the cache if it has a hash
+	if transfer.Hash != "" {
+		p.transferCache.RemoveTransfer(transfer.Hash)
+	}
+
+	log.Info("transfers").
+		Str("name", transfer.Name).
+		Int64("id", transfer.ID).
+		Msg("Successfully cancelled seeding transfer")
 }
 
 // isTransferBeingProcessed checks if a transfer is already being handled
@@ -299,8 +395,24 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 		Str("name", transfer.Name).
 		Int64("id", transfer.ID).
 		Int64("file_id", transfer.FileID).
+		Str("status", transfer.Status).
 		Msg("Processing transfer")
 
+	// Special handling for seeding transfers with no files
+	if transfer.Status == "SEEDING" && !transfer.UserfileExists {
+		// For seeding transfers without files, check if it has seeded long enough
+		if p.shouldCancelSeedingTransfer(transfer) {
+			p.cancelSeedingTransfer(transfer)
+		} else {
+			log.Debug("transfers").
+				Str("name", transfer.Name).
+				Int64("id", transfer.ID).
+				Msg("Seeding transfer with no files, leaving for next check")
+		}
+		return
+	}
+
+	// For transfers with no files, mark as completed
 	if !transfer.UserfileExists {
 		log.Debug("transfers").
 			Str("name", transfer.Name).
@@ -323,6 +435,19 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 	}
 
 	if len(files) == 0 {
+		// For seeding transfers with no files found, check if it has seeded long enough
+		if transfer.Status == "SEEDING" {
+			if p.shouldCancelSeedingTransfer(transfer) {
+				p.cancelSeedingTransfer(transfer)
+				return
+			}
+			log.Debug("transfers").
+				Str("name", transfer.Name).
+				Int64("id", transfer.ID).
+				Msg("Seeding transfer with no files found, leaving for next check")
+			return
+		}
+
 		err := NewNoFilesFoundError(transfer.ID)
 		p.manager.coordinator.FailTransfer(transfer.ID, err)
 		return
@@ -338,6 +463,20 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 
 	// If no files need downloading (all exist), complete the transfer
 	if filesToDownload == 0 {
+		// For seeding transfers with all files already downloaded, check if it has seeded long enough
+		if transfer.Status == "SEEDING" {
+			if p.shouldCancelSeedingTransfer(transfer) {
+				p.cancelSeedingTransfer(transfer)
+				return
+			}
+			log.Info("transfers").
+				Str("name", transfer.Name).
+				Int64("id", transfer.ID).
+				Msg("All files already exist for seeding transfer, leaving for next check")
+			p.manager.coordinator.CompleteTransfer(transfer.ID)
+			return
+		}
+
 		log.Info("transfers").
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
@@ -392,6 +531,11 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 	ctx.TotalSize = totalSize
 	ctx.mu.Unlock()
 
+	// Update the transfer cache with the total size
+	if cachedTransfer, ok := p.transferCache.GetTransferByID(transfer.ID); ok {
+		cachedTransfer.Size = totalSize
+	}
+
 	log.Info("transfers").
 		Int64("transfer_id", transfer.ID).
 		Int64("total_size", totalSize).
@@ -417,6 +561,9 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 			ctx.mu.Lock()
 			ctx.DownloadedSize += file.Size
 			ctx.mu.Unlock()
+
+			// Update the transfer cache with the downloaded size
+			p.transferCache.UpdateTransferProgress(transfer.ID, ctx.DownloadedSize)
 
 			log.Debug("transfers").
 				Int64("transfer_id", transfer.ID).
@@ -492,7 +639,7 @@ func (p *TransferProcessor) initializeTransfer(transfer *putio.Transfer, filesTo
 
 // processErroredTransfers handles failed transfers with retry logic
 func (p *TransferProcessor) processErroredTransfers() {
-	const maxRetryAttempts = 3 // Maximum number of retry attempts
+	maxRetryAttempts := p.manager.dlConfig.MaxRetryAttempts
 
 	for _, transfer := range p.transfers["ERROR"] {
 		// Get current retry count
@@ -531,6 +678,9 @@ func (p *TransferProcessor) processErroredTransfers() {
 					Int64("id", transfer.ID).
 					Str("new_status", retried.Status).
 					Msgf("Successfully retried transfer (attempt %d of %d)", retryCount+1, maxRetryAttempts)
+
+				// Add the retried transfer to the cache
+				p.transferCache.AddTransfer(retried)
 			}
 		} else {
 			// Log that we're giving up after max retries
@@ -546,6 +696,12 @@ func (p *TransferProcessor) processErroredTransfers() {
 			} else {
 				// Clear retry counter after successful deletion
 				p.retryAttempts.Delete(transfer.ID)
+
+				// Remove the transfer from the cache
+				if transfer.Hash != "" {
+					p.transferCache.RemoveTransfer(transfer.Hash)
+				}
+
 				log.Info("transfers").
 					Str("name", transfer.Name).
 					Int64("id", transfer.ID).
@@ -563,8 +719,8 @@ func (p *TransferProcessor) MarkTransferProcessed(transferID int64) {
 		Msg("Marked transfer as processed locally")
 }
 
-// finalizeCompletedTransfers checks for transfers that are marked as completed in the
-// internal tracking system but haven't been fully cleaned up yet.
+// finalizeCompletedTransfers checks for transfers that have all files completed
+// but haven't been fully processed yet.
 func (p *TransferProcessor) finalizeCompletedTransfers() {
 	// Get all active transfers from the coordinator
 	var pendingCleanup []int64
@@ -573,9 +729,11 @@ func (p *TransferProcessor) finalizeCompletedTransfers() {
 		transferID := key.(int64)
 		ctx := value.(*TransferContext)
 
-		// Check if this transfer is in Completed state but hasn't been cleaned up
+		// Check if this transfer has all files completed but hasn't been processed
 		ctx.mu.RLock()
-		isCompletedPending := ctx.State == TransferLifecycleCompleted
+		isCompletedPending := ctx.Processed == NotProcessed &&
+			ctx.CompletedFiles+ctx.FailedFiles >= ctx.TotalFiles &&
+			ctx.FailedFiles == 0
 		name := ctx.Name
 		ctx.mu.RUnlock()
 
@@ -595,7 +753,7 @@ func (p *TransferProcessor) finalizeCompletedTransfers() {
 			Int64("id", transferID).
 			Msg("Finalizing completed transfer")
 
-		// Call CompleteTransfer which will run cleanup hooks and delete the context
+		// Call CompleteTransfer which will run cleanup hooks and mark as processed
 		if err := p.manager.coordinator.CompleteTransfer(transferID); err != nil {
 			log.Error("transfers").
 				Int64("id", transferID).

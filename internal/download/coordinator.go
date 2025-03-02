@@ -35,7 +35,7 @@ func (tc *TransferCoordinator) InitiateTransfer(id int64, name string, fileID in
 		Name:       name,
 		FileID:     fileID,
 		TotalFiles: int32(totalFiles),
-		State:      TransferLifecycleInitial,
+		Processed:  NotProcessed,
 	}
 	tc.transfers.Store(id, ctx)
 
@@ -55,14 +55,6 @@ func (tc *TransferCoordinator) StartDownload(transferID int64) error {
 		return NewTransferNotFoundError(transferID)
 	}
 
-	ctx.mu.Lock()
-	defer ctx.mu.Unlock()
-
-	if ctx.State != TransferLifecycleInitial {
-		return fmt.Errorf("invalid state transition: %s -> Downloading", ctx.State)
-	}
-
-	ctx.State = TransferLifecycleDownloading
 	log.Info("transfer").
 		Int64("id", transferID).
 		Str("name", ctx.Name).
@@ -85,15 +77,9 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
-	// If transfer is already completed, just return
-	if ctx.State == TransferLifecycleCompleted {
+	// If transfer is already processed, just return
+	if ctx.Processed == Processed {
 		return nil
-	}
-
-	// Allow file completions even if the transfer is in a failed state
-	// This lets us track progress even if some files failed
-	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleFailed {
-		return fmt.Errorf("cannot complete file: transfer %d is in state %s", transferID, ctx.State)
 	}
 
 	completed := atomic.AddInt32(&ctx.CompletedFiles, 1)
@@ -120,11 +106,8 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 
 	// Check if all files are done (completed + failed = total)
 	if completed+ctx.FailedFiles >= ctx.TotalFiles {
-		// Only mark as completed if there are no failed files
+		// Only mark as ready for completion if there are no failed files
 		if ctx.FailedFiles == 0 {
-			// We already have the lock, so just update the state
-			// BUT don't remove the transfer context yet - active downloads may still need it
-			ctx.State = TransferLifecycleCompleted
 			log.Info("transfer").
 				Int64("id", transferID).
 				Str("name", ctx.Name).
@@ -132,13 +115,11 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 				Int32("total", ctx.TotalFiles).
 				Int64("downloaded_bytes", ctx.DownloadedSize).
 				Int64("total_bytes", ctx.TotalSize).
-				Msg("Transfer marked as completed, waiting for final cleanup")
+				Msg("Transfer ready for completion, waiting for final cleanup")
 
 			// The actual cleanup and transfer context removal will happen
 			// when all downloads have explicitly finished and CompleteTransfer is called
 		} else {
-			// If there are failed files, mark as failed but don't delete
-			ctx.State = TransferLifecycleFailed
 			log.Info("transfer").
 				Int64("id", transferID).
 				Str("name", ctx.Name).
@@ -165,8 +146,8 @@ func (tc *TransferCoordinator) FileFailure(transferID int64) error {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
-	// If transfer is already completed, just return
-	if ctx.State == TransferLifecycleCompleted {
+	// If transfer is already processed, just return
+	if ctx.Processed == Processed {
 		return nil
 	}
 
@@ -174,9 +155,6 @@ func (tc *TransferCoordinator) FileFailure(transferID int64) error {
 	failed := atomic.AddInt32(&ctx.FailedFiles, 1)
 	completed := ctx.CompletedFiles
 	total := ctx.TotalFiles
-
-	// Mark transfer as failed but don't delete it
-	ctx.State = TransferLifecycleFailed
 
 	log.Error("transfer").
 		Int64("id", transferID).
@@ -201,7 +179,7 @@ func (tc *TransferCoordinator) FileFailure(transferID int64) error {
 }
 
 // CompleteTransfer marks a transfer as completed and triggers cleanup
-// This now marks the transfer as processed instead of removing it
+// This marks the transfer as processed
 func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
@@ -210,17 +188,6 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
-
-	// Allow completion from both Downloading and Completed states
-	// This handles both:
-	// 1. Normal completion directly from Downloading
-	// 2. Final cleanup for transfers already marked Completed but waiting for active downloads
-	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleCompleted {
-		return fmt.Errorf("invalid state transition: %s -> Completed", ctx.State)
-	}
-
-	// Make sure it's marked as completed (might already be)
-	ctx.State = TransferLifecycleCompleted
 
 	// Double-check that all files are actually completed
 	if ctx.CompletedFiles+ctx.FailedFiles < ctx.TotalFiles {
@@ -250,8 +217,8 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 		}
 	}
 
-	// Mark the transfer as processed instead of removing it
-	ctx.State = TransferLifecycleProcessed
+	// Mark the transfer as processed
+	ctx.Processed = Processed
 
 	// Mark the transfer as processed in the processor
 	tc.manager.GetTransferProcessor().MarkTransferProcessed(transferID)
@@ -264,7 +231,7 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	return nil
 }
 
-// FailTransfer marks a transfer as failed
+// FailTransfer logs a transfer failure but keeps the transfer context for retry
 func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 	ctx, ok := tc.GetTransferContext(transferID)
 	if !ok {
@@ -276,20 +243,12 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 
 	// Check if this is a cancellation
 	if downloadErr, ok := err.(*DownloadError); ok && downloadErr.Type == "DownloadCancelled" {
-		// For cancellations, just mark as cancelled but keep the transfer
-		ctx.State = TransferLifecycleCancelled
-		ctx.Error = err
 		log.Info("transfer").
 			Int64("id", transferID).
 			Str("name", ctx.Name).
 			Msg("Transfer cancelled")
 		return nil
 	}
-
-	// For real failures, mark as failed but don't clean up
-	// We'll keep the transfer context so we can retry later
-	ctx.State = TransferLifecycleFailed
-	ctx.Error = err
 
 	log.Error("transfer").
 		Int64("id", transferID).

@@ -66,12 +66,20 @@ var runCmd = &cobra.Command{
 		oauthToken := viper.GetString("token")
 		listenAddr := viper.GetString("listen")
 		workerCount := viper.GetInt("workers")
+		transferCheckInterval := viper.GetString("transfer-check-interval")
+		downloadStallTimeout := viper.GetString("download-stall-timeout")
+		seedingTimeThreshold := viper.GetString("seeding-time-threshold")
+		maxRetryAttempts := viper.GetInt("max-retry-attempts")
 
 		log.Debug("config").
 			Str("target_dir", targetDir).
 			Str("putio_folder", putioFolder).
 			Str("listen_addr", listenAddr).
 			Int("workers", workerCount).
+			Str("transfer_check_interval", transferCheckInterval).
+			Str("download_stall_timeout", downloadStallTimeout).
+			Str("seeding_time_threshold", seedingTimeThreshold).
+			Int("max_retry_attempts", maxRetryAttempts).
 			Msg("Configuration loaded")
 
 		// Validate required configuration values
@@ -102,11 +110,16 @@ var runCmd = &cobra.Command{
 
 		// Initialize configuration
 		cfg := &config.Config{
-			TargetDir:   targetDir,
-			PutioFolder: putioFolder,
-			OAuthToken:  oauthToken,
-			ListenAddr:  listenAddr,
-			WorkerCount: workerCount,
+			TargetDir:             targetDir,
+			PutioFolder:           putioFolder,
+			OAuthToken:            oauthToken,
+			ListenAddr:            listenAddr,
+			WorkerCount:           workerCount,
+			LogLevel:              logLevel,
+			TransferCheckInterval: transferCheckInterval,
+			DownloadStallTimeout:  downloadStallTimeout,
+			SeedingTimeThreshold:  seedingTimeThreshold,
+			MaxRetryAttempts:      maxRetryAttempts,
 		}
 
 		// Initialize Put.io API client
@@ -176,6 +189,7 @@ var generateConfigCmd = &cobra.Command{
 		cfg := `# Plundrio configuration
 # Save as ~/.plundrio.yaml or specify with --config
 
+# Basic configuration
 target: /path/to/downloads	# Target directory for downloads
 folder: "plundrio"					# Folder name on Put.io
 token: "" 									# Get a token with get-token
@@ -183,8 +197,15 @@ listen: ":9091"							# Transmission RPC server address
 workers: 4									# Number of download workers
 log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 
+# Advanced download configuration
+transfer_check_interval: "30s"  # How often to check for new transfers
+download_stall_timeout: "2m"    # How long a download can stall before being cancelled
+seeding_time_threshold: "24h"   # How long a transfer should seed before being cancelled
+max_retry_attempts: 3           # Maximum number of times to retry a failed transfer
+
 # Environment variables:
 # PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS, PLDR_LOG_LEVEL
+# PLDR_TRANSFER_CHECK_INTERVAL, PLDR_DOWNLOAD_STALL_TIMEOUT, PLDR_SEEDING_TIME_THRESHOLD, PLDR_MAX_RETRY_ATTEMPTS
 `
 
 		outputPath := "plundrio-config.yaml"
@@ -286,6 +307,12 @@ func init() {
 	runCmd.Flags().StringP("listen", "l", ":9091", "Listen address")
 	runCmd.Flags().IntP("workers", "w", 4, "Number of workers")
 	runCmd.Flags().String("log-level", "", "Log level (trace,debug,info,warn,error,fatal,none,pretty)")
+
+	// Advanced download configuration flags
+	runCmd.Flags().String("transfer-check-interval", "30s", "How often to check for new transfers")
+	runCmd.Flags().String("download-stall-timeout", "2m", "How long a download can stall before being cancelled")
+	runCmd.Flags().String("seeding-time-threshold", "24h", "How long a transfer should seed before being cancelled")
+	runCmd.Flags().Int("max-retry-attempts", 3, "Maximum number of times to retry a failed transfer")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(getTokenCmd)

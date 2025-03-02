@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/log"
@@ -12,12 +13,54 @@ import (
 
 // findTransferByHash finds a transfer by its hash string
 func (s *Server) findTransferByHash(hash string) (*putio.Transfer, error) {
+	// First check the cache via RPC handler
+	if s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+		// Try to get the transfer directly from cache
+		if cachedTransfer, ok := s.dlManager.GetRPCHandler().GetTransferByHash(hash); ok {
+			// Convert cached transfer to putio.Transfer
+			return &putio.Transfer{
+				ID:             cachedTransfer.ID,
+				Hash:           cachedTransfer.Hash,
+				Name:           cachedTransfer.Name,
+				Status:         cachedTransfer.Status,
+				Size:           int(cachedTransfer.Size),
+				Downloaded:     cachedTransfer.Downloaded,
+				FileID:         cachedTransfer.FileID,
+				SecondsSeeding: cachedTransfer.SecondsSeeding,
+				ErrorMessage:   cachedTransfer.ErrorMessage,
+				Availability:   cachedTransfer.Availability,
+				PercentDone:    cachedTransfer.PercentDone,
+			}, nil
+		}
+
+		// Try to get the transfer ID from the hash
+		if transferID, ok := s.dlManager.GetRPCHandler().GetTransferIDByHash(hash); ok {
+			// Now try to get the transfer from the API using the ID
+			transfers, err := s.client.GetTransfers()
+			if err != nil {
+				return nil, err
+			}
+			for _, t := range transfers {
+				if t.ID == transferID {
+					// Update the hash mapping in case it's missing
+					s.dlManager.GetRPCHandler().AddTransfer(t)
+					return t, nil
+				}
+			}
+		}
+	}
+
+	// Fall back to API call if not found in cache
 	transfers, err := s.client.GetTransfers()
 	if err != nil {
 		return nil, err
 	}
 	for _, t := range transfers {
 		if t.Hash == hash {
+			// If we found it, add it to the cache for next time
+			if s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+				s.dlManager.GetRPCHandler().AddTransfer(t)
+			}
 			return t, nil
 		}
 	}
@@ -61,6 +104,35 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 			Str("name", name).
 			Int64("folder_id", s.cfg.FolderID).
 			Msg("Torrent file uploaded")
+
+		// We need to get the transfer that was created to add it to the cache
+		// Wait a moment for the transfer to be created
+		time.Sleep(1 * time.Second)
+
+		// Get all transfers and find the one we just created
+		transfers, err := s.client.GetTransfers()
+		if err == nil && s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+			// Find the most recently created transfer
+			var newestTransfer *putio.Transfer
+			var newestTime time.Time
+
+			for _, t := range transfers {
+				if t.CreatedAt != nil && t.CreatedAt.After(newestTime) {
+					newestTransfer = t
+					newestTime = t.CreatedAt.Time
+				}
+			}
+
+			// Add the transfer to the cache
+			if newestTransfer != nil {
+				s.dlManager.GetRPCHandler().AddTransfer(newestTransfer)
+				log.Info("rpc").
+					Str("operation", "torrent-add").
+					Int64("transfer_id", newestTransfer.ID).
+					Str("hash", newestTransfer.Hash).
+					Msg("Added new transfer to cache")
+			}
+		}
 	} else {
 		// Handle magnet links
 		if params.MagnetLink != "" {
@@ -72,8 +144,14 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		}
 
 		// Add magnet link to Put.io
-		if err := s.client.AddTransfer(name, s.cfg.FolderID); err != nil {
+		transfer, err := s.client.AddTransferAndReturn(name, s.cfg.FolderID)
+		if err != nil {
 			return nil, fmt.Errorf("failed to add transfer: %w", err)
+		}
+
+		// Add to cache if we have an RPC handler
+		if s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+			s.dlManager.GetRPCHandler().AddTransfer(transfer)
 		}
 
 		log.Info("rpc").
@@ -81,11 +159,17 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 			Str("type", "magnet").
 			Str("magnet", name).
 			Int64("folder_id", s.cfg.FolderID).
+			Int64("transfer_id", transfer.ID).
+			Str("hash", transfer.Hash).
 			Msg("Magnet link added")
 
 		// Return success response
 		return map[string]interface{}{
-			"torrent-added": map[string]interface{}{},
+			"torrent-added": map[string]interface{}{
+				"id":         transfer.ID,
+				"hashString": transfer.Hash,
+				"name":       transfer.Name,
+			},
 		}, nil
 	}
 
@@ -113,26 +197,55 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		Interface("fields", params.Fields).
 		Msg("Processing torrent-get request")
 
-	// Get transfers from the processor, which now keeps track of all transfers
-	// including completed ones that have been processed
-	processor := s.dlManager.GetTransferProcessor()
+	var transfers []*putio.Transfer
 
-	// Check if processor is nil
-	if processor == nil {
-		log.Error("rpc").
+	// Check if we have an RPC handler to get transfers from cache
+	if s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+		// Get transfers from cache
+		cachedTransfers := s.dlManager.GetRPCHandler().GetAllTransfers()
+
+		// Convert cached transfers to putio.Transfer objects
+		for _, ct := range cachedTransfers {
+			transfers = append(transfers, &putio.Transfer{
+				ID:             ct.ID,
+				Hash:           ct.Hash,
+				Name:           ct.Name,
+				Status:         ct.Status,
+				Size:           int(ct.Size),
+				Downloaded:     ct.Downloaded,
+				FileID:         ct.FileID,
+				SecondsSeeding: ct.SecondsSeeding,
+				ErrorMessage:   ct.ErrorMessage,
+				Availability:   ct.Availability,
+				PercentDone:    ct.PercentDone,
+			})
+		}
+
+		log.Debug("rpc").
 			Str("operation", "torrent-get").
-			Msg("Transfer processor is nil")
-		return map[string]interface{}{
-			"torrents": []map[string]interface{}{},
-		}, nil
+			Int("cached_transfers", len(cachedTransfers)).
+			Msg("Using cached transfers from RPC handler")
+	} else {
+		// Fall back to processor if RPC handler is not available
+		processor := s.dlManager.GetTransferProcessor()
+
+		// Check if processor is nil
+		if processor == nil {
+			log.Error("rpc").
+				Str("operation", "torrent-get").
+				Msg("Transfer processor is nil")
+			return map[string]interface{}{
+				"torrents": []map[string]interface{}{},
+			}, nil
+		}
+
+		// Log processor details
+		log.Debug("rpc").
+			Str("operation", "torrent-get").
+			Msg("Using transfer processor")
+
+		transfers = processor.GetTransfers()
 	}
-
-	// Log processor details
-	log.Debug("rpc").
-		Str("operation", "torrent-get").
-		Msg("Using transfer processor")
-
-	transfers := processor.GetTransfers()
 
 	log.Debug("rpc").
 		Str("operation", "torrent-get").
@@ -161,79 +274,46 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		var status int
 		var leftUntilDone int64
 
-		// Check if we have a transfer context (transfer is being processed)
-		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
-			// Get the context data
-			totalSize := ctx.TotalSize
-			downloadedSize := ctx.DownloadedSize
-			totalFiles := ctx.TotalFiles
-			completedFiles := ctx.CompletedFiles
-			state := ctx.State
+		// Check if we have an RPC handler to calculate progress
+		if s.dlManager.GetRPCHandler() != nil {
+			// Use the progress tracker to calculate progress
+			calculatedProgress, remainingBytes := s.dlManager.GetRPCHandler().GetProgress(t.ID, t)
+			percentDone = calculatedProgress / 100.0 // Convert from 0-100 to 0-1
+			leftUntilDone = remainingBytes
 
-			// Calculate total size (Put.io download + local download)
-			// If we have size information, use it; otherwise fall back to the transfer size
-			totalTransferSize := totalSize
-			if totalTransferSize == 0 {
-				totalTransferSize = int64(t.Size)
-			}
+			// Check if the transfer is processed
+			isProcessed := s.dlManager.GetRPCHandler().IsTransferProcessed(t.ID)
 
-			// The total download task is considered as two parts:
-			// 1. Put.io downloading the torrent (50% of the total task)
-			// 2. Local downloading from Put.io (50% of the total task)
+			// Get the transfer context for additional information
+			ctx, exists := s.dlManager.GetRPCHandler().GetTransferContext(t.ID)
 
-			// Calculate Put.io progress (0-50%)
-			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
-
-			// Calculate local download progress (0-50%)
-			var localProgress float64
-			if totalSize > 0 {
-				// If we have size information, use bytes downloaded
-				localProgress = float64(downloadedSize) / float64(totalSize) * 0.5 // Maps 0-1 to 0-0.5
-			} else if totalFiles > 0 {
-				// Fall back to file count if size information is not available
-				localProgress = float64(completedFiles) / float64(totalFiles) * 0.5 // Maps 0-1 to 0-0.5
-			}
-
-			// Combine the two progress values
-			percentDone = putioProgress + localProgress
-
-			// Calculate bytes left until done
-			// First, calculate how many bytes are left on Put.io side
-			putioLeftBytes := int64(float64(t.Size) * (1.0 - float64(t.PercentDone)/100.0))
-
-			// Then, calculate how many bytes are left on local download side
-			localLeftBytes := totalSize - downloadedSize
-
-			// Total bytes left is the sum of both
-			leftUntilDone = putioLeftBytes + localLeftBytes
-
-			// Ensure leftUntilDone is never negative
-			if leftUntilDone < 0 {
-				leftUntilDone = 0
-			}
-
-			// Check if the transfer is in the Processed state
-			if state == 5 { // TransferLifecycleProcessed = 5
+			if isProcessed {
 				// For transfers that have been processed locally, show as 100% complete
 				percentDone = 1.0 // 100%
 				leftUntilDone = 0 // Nothing left to download
 				status = 6        // TR_STATUS_SEED (completed/seeding)
-			} else if state == 2 { // TransferLifecycleCompleted = 2
-				status = s.mapPutioStatus(t.Status)
+			} else if exists && ctx.TotalFiles > 0 {
+				// If the transfer is being processed but not yet complete
+				if ctx.CompletedFiles+ctx.FailedFiles >= ctx.TotalFiles && ctx.FailedFiles == 0 {
+					// All files completed, no failures
+					status = 6 // TR_STATUS_SEED (completed/seeding)
+				} else {
+					// Still downloading
+					status = 4 // TR_STATUS_DOWNLOAD
+				}
 			} else {
-				// If not all files are downloaded, show as downloading
-				status = 4 // TR_STATUS_DOWNLOAD
+				// Use the put.io status
+				status = s.mapPutioStatus(t.Status)
 			}
 
 			log.Debug("rpc").
 				Str("operation", "torrent-get").
 				Int64("id", t.ID).
 				Str("name", t.Name).
-				Float64("putio_progress", putioProgress*100).
-				Float64("local_progress", localProgress*100).
-				Float64("combined_progress", percentDone*100).
+				Float64("progress", percentDone*100).
 				Int64("left_until_done", leftUntilDone).
-				Msg("Calculated progress for transfer with context")
+				Bool("processed", isProcessed).
+				Msg("Calculated progress using RPC handler")
 		} else if t.Status == "COMPLETED" || t.Status == "SEEDING" {
 			// For transfers that are completed on put.io but have no corresponding entry in the processor
 			// (i.e., already downloaded), show as 100% complete with status "downloaded"
@@ -358,6 +438,11 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 				Err(err).
 				Msg("Failed to delete transfer")
 		} else {
+			// Remove from cache if we have an RPC handler
+			if s.dlManager != nil && s.dlManager.GetRPCHandler() != nil {
+				s.dlManager.GetRPCHandler().RemoveTransfer(hash)
+			}
+
 			log.Info("rpc").
 				Str("operation", "torrent-remove").
 				Str("hash", hash).

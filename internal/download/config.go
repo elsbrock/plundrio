@@ -16,29 +16,28 @@ type DownloadConfig struct {
 	// TransferCheckInterval is how often to check for new transfers
 	TransferCheckInterval time.Duration
 
-	// IdleConnectionTimeout is the maximum amount of time an idle connection is kept open
-	IdleConnectionTimeout time.Duration
+	// SeedingTimeThreshold is how long a transfer should seed before being cancelled
+	SeedingTimeThreshold time.Duration
 
-	// DownloadHeaderTimeout is the timeout for receiving the response headers
-	DownloadHeaderTimeout time.Duration
+	// AvailabilityThreshold is the minimum availability required for a transfer
+	AvailabilityThreshold int
 
-	// DownloadStallTimeout is how long a download can stall before being cancelled
-	DownloadStallTimeout time.Duration
+	// CacheUpdateInterval is how often the transfer cache is updated
+	CacheUpdateInterval time.Duration
 
-	// CopyTimeout is the timeout for waiting for the copy operation to complete after cancellation
-	CopyTimeout time.Duration
+	// MaxRetryAttempts is the maximum number of times to retry a failed transfer
+	MaxRetryAttempts int
 }
 
 // GetDefaultConfig returns a DownloadConfig with reasonable default values
 func GetDefaultConfig() *DownloadConfig {
 	return &DownloadConfig{
-		DefaultWorkerCount:     3,                // 3 concurrent downloads by default
-		BufferMultiple:         5,                // Buffer size = 5 * worker count
-		ProgressUpdateInterval: 5 * time.Second,  // Log progress every 5 seconds
-		TransferCheckInterval:  30 * time.Second, // Check for new transfers every 30 seconds
-		IdleConnectionTimeout:  90 * time.Second, // Keep idle connections for 90 seconds
-		DownloadHeaderTimeout:  30 * time.Second, // 30 second timeout for response headers
-		DownloadStallTimeout:   2 * time.Minute,  // Cancel download if stalled for 2 minutes
-		CopyTimeout:            10 * time.Second, // Wait 10 seconds for copy to complete after cancellation
+		DefaultWorkerCount:     3,               // 3 concurrent downloads by default
+		BufferMultiple:         5,               // Buffer size = 5 * worker count
+		ProgressUpdateInterval: 5 * time.Second, // Log progress every 5 seconds
+		SeedingTimeThreshold:   24 * time.Hour,  // Seed for 24 hours by default
+		AvailabilityThreshold:  5,               // Minimum availability of 5 peers
+		CacheUpdateInterval:    5 * time.Minute, // Update transfer cache every 5 minutes
+		MaxRetryAttempts:       3,               // Retry failed transfers up to 3 times
 	}
 }

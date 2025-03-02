@@ -75,18 +75,18 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 	return folder.ID, nil
 }
 
-// AddTransfer adds a new transfer (torrent) to Put.io
-func (c *Client) AddTransfer(magnetLink string, folderID int64) error {
+// AddTransferAndReturn adds a new transfer (torrent) to Put.io and returns the transfer object
+func (c *Client) AddTransferAndReturn(magnetLink string, folderID int64) (*putio.Transfer, error) {
 	transfer, err := c.client.Transfers.Add(c.ctx, magnetLink, folderID, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if transfer.Status == "ERROR" {
-		return fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
+		return nil, fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
 	}
 
-	return nil
+	return &transfer, nil
 }
 
 // GetTransfers returns the list of current transfers
