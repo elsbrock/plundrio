@@ -284,12 +284,6 @@ func (p *TransferProcessor) isTransferBeingProcessed(transferID int64) bool {
 
 // startTransferProcessing begins processing a transfer
 func (p *TransferProcessor) startTransferProcessing(transfer *putio.Transfer) {
-	log.Info("transfers").
-		Str("name", transfer.Name).
-		Str("status", transfer.Status).
-		Int64("id", transfer.ID).
-		Msg("Found ready transfer")
-
 	p.manager.workerWg.Add(1)
 	transferCopy := *transfer
 	go func() {
@@ -306,6 +300,21 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 		Int64("id", transfer.ID).
 		Int64("file_id", transfer.FileID).
 		Msg("Processing transfer")
+
+	if !transfer.UserfileExists {
+		log.Debug("transfers").
+			Str("name", transfer.Name).
+			Int64("id", transfer.ID).
+			Msg("No associated files, skipping transfer and marking as completed")
+		p.manager.coordinator.CompleteTransfer(transfer.ID)
+		return
+	}
+
+	log.Info("transfers").
+		Str("name", transfer.Name).
+		Str("status", transfer.Status).
+		Int64("id", transfer.ID).
+		Msg("Found ready transfer with files")
 
 	files, err := p.manager.client.GetAllTransferFiles(transfer.FileID)
 	if err != nil {
