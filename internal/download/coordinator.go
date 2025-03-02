@@ -312,15 +312,5 @@ func (tc *TransferCoordinator) GetTransferContext(transferID int64) (*TransferCo
 		Int64("id", transferID).
 		Msg("Transfer context not found in coordinator")
 
-	// Debug: List all known transfers
-	var knownTransfers []int64
-	tc.transfers.Range(func(key, value interface{}) bool {
-		knownTransfers = append(knownTransfers, key.(int64))
-		return true
-	})
-	log.Debug("transfer").
-		Interface("known_transfers", knownTransfers).
-		Msg("Currently tracked transfers")
-
 	return nil, false
 }
