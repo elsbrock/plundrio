@@ -1,6 +1,6 @@
 module github.com/elsbrock/plundrio
 
-go 1.21.0
+go 1.23.0
 
 toolchain go1.24.1
 
@@ -10,7 +10,7 @@ require (
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.0
-	golang.org/x/oauth2 v0.25.0
+	golang.org/x/oauth2 v0.28.0
 )
 
 require (
