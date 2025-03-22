@@ -7,7 +7,7 @@ toolchain go1.24.1
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/elsbrock/go-putio v0.0.0-20250226202422-08f14af78cc1
-	github.com/rs/zerolog v1.33.0
+	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.0
 	golang.org/x/oauth2 v0.25.0
