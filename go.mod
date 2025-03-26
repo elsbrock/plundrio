@@ -9,7 +9,7 @@ require (
 	github.com/elsbrock/go-putio v0.0.0-20250226202422-08f14af78cc1
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.9.1
-	github.com/spf13/viper v1.20.0
+	github.com/spf13/viper v1.20.1
 	golang.org/x/oauth2 v0.25.0
 )
 
