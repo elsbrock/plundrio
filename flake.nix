@@ -168,7 +168,7 @@
           pname = "plundrio";
           version = "0.9.6";
           src = ./.;
-          vendorHash = "sha256-4UedThnmZbb13pD9bu4SVtMKizVsFry8ibwZ8995HgA=";
+          vendorHash = "sha256-t0rqiOd363quL9oetmHMxtwT/m3ZDxn1VyMUdvXfVlY=";
           proxyVendor = true;
           subPackages = [ "cmd/plundrio" ];
 
