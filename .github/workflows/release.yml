@@ -62,13 +62,25 @@ jobs:
       - name: Build ${{ matrix.arch }} Docker image
         run: nix build .#${{ matrix.pkg }}
 
+      - name: Load ${{ matrix.arch }} Docker image
+        run: docker load < result
+
+      - name: Tag ${{ matrix.arch }} Docker image
+        run: |
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+
+      - name: Docker Metadata
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
+            ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+
       - name: Push ${{ matrix.arch }} Docker image
         run: |
-          docker load < result
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
           docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
           docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
 
   manifests:
