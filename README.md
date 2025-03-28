@@ -266,9 +266,11 @@ To add plundrio to your *arr application (Sonarr, Radarr, etc.):
    - Name: plundrio (or any name you prefer)
    - Host: localhost (or your server IP)
    - Port: 9091 (or your configured port)
-   - URL Base: leave empty
+   - Use SSL: leave unchecked
+   - URL Base (if shown): keep default value of `/transmission/`
    - Username: leave empty
    - Password: leave empty
+   - Category: keep default value
 5. Click "Test" to verify the connection
 6. Save if the test is successful
 
