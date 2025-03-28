@@ -71,7 +71,7 @@ jobs:
           docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
 
       - name: Docker Metadata
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
           images: |
             ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
