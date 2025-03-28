@@ -201,6 +201,7 @@
           };
           config = {
             Entrypoint = [ "/bin/plundrio" ];
+            Cmd = [ "run" ];
             ExposedPorts = {
               "9091/tcp" = {};
             };
