@@ -6,7 +6,15 @@
   };
   outputs = { self, nixpkgs, flake-utils }:
     let
-      # Define the NixOS module
+      pname = "plundrio";
+      version = "0.10.0";
+      description = "A Put.io integration for *arr applications";
+      maintainer = {
+        name = "Simon Elsbrock";
+        email = "simon@iodev.org";
+      };
+      license = "mit";
+
       nixosModule = { config, lib, pkgs, ... }:
         let
           cfg = config.services.plundrio;
@@ -156,33 +164,29 @@
 
         # Create a package for the specified system/platform
         makePlundrio = crossPkgs: crossPkgs.buildGoModule rec {
-          pname = "plundrio";
-          version = "0.9.8";
+          inherit pname version;
           src = ./.;
           vendorHash = "sha256-tUvjxuUk79iQokx9SoifLI/8t8Au3r3ipgqAJ2JwBS8=";
           proxyVendor = true;
-          subPackages = [ "cmd/plundrio" ];
+          subPackages = [ "cmd/${pname}" ];
 
           # Modified ldflags to work with pure Go builds
           ldflags = [
-            "-X main.version=${version}"  # Inject version from package definition
+            "-X main.version=${version}"
           ];
 
           meta = with pkgs.lib; {
-            description = "A Put.io integration for *arr applications";
-            homepage = "https://github.com/elsbrock/plundrio";
-            license = licenses.mit;
-            maintainers = [ {
-              name = "Simon Elsbrock";
-              email = "simon@iodev.org";
-            } ];
+            inherit description;
+            homepage = "https://github.com/elsbrock/${pname}";
+            license = licenses.${license};
+            maintainers = [ maintainer ];
             platforms = platforms.linux;
           };
         };
 
         # Create a docker image for the specified package
         makeDocker = pkg: architecture: pkgs.dockerTools.buildImage {
-          name = "plundrio";
+          name = pname;
           tag = "latest";
           inherit architecture;
           copyToRoot = pkgs.buildEnv {
