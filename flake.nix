@@ -181,7 +181,10 @@
             description = "A Put.io integration for *arr applications";
             homepage = "https://github.com/elsbrock/plundrio";
             license = licenses.mit;
-            maintainers = with maintainers; [ ];
+            maintainers = [ {
+              name = "Simon Elsbrock";
+              email = "simon@iodev.org";
+            } ];
             platforms = platforms.linux;
           };
         };
