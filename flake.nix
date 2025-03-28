@@ -166,9 +166,9 @@
         # Create a package for the specified system/platform
         makePlundrio = crossPkgs: crossPkgs.buildGoModule rec {
           pname = "plundrio";
-          version = "0.9.6";
+          version = "0.9.7";
           src = ./.;
-          vendorHash = "sha256-t0rqiOd363quL9oetmHMxtwT/m3ZDxn1VyMUdvXfVlY=";
+          vendorHash = "sha256-tUvjxuUk79iQokx9SoifLI/8t8Au3r3ipgqAJ2JwBS8=";
           proxyVendor = true;
           subPackages = [ "cmd/plundrio" ];
 
