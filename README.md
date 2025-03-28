@@ -144,7 +144,7 @@ plundrio can be integrated directly into your NixOS configuration as a service:
             enable = true;
             targetDir = "/var/lib/plundrio/downloads";
             putioFolder = "plundrio";
-            oauthToken = "your-oauth-token";
+            authTokenFile = "/run/credentials/plundrio.service/token";
             # Optional configurations with defaults:
             # listenAddr = ":9091";
             # workerCount = 4;

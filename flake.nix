@@ -34,18 +34,10 @@
               description = "Put.io folder name";
             };
 
-            oauthToken = lib.mkOption {
-              type = lib.types.str;
-              description = "Put.io OAuth token (deprecated, use environmentFile instead)";
-              example = "ABCDEF123456";
-              default = "";
-            };
-
-            environmentFile = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = "Path to environment file containing PLDR_TOKEN";
-              example = "/var/lib/plundrio/plundrio.env";
+            authTokenFile = lib.mkOption {
+              type = lib.types.path;
+              description = "Path to file containing Put.io OAuth token";
+              example = "/run/credentials/plundrio.service/token";
             };
 
             listenAddr = lib.mkOption {
@@ -111,11 +103,7 @@
                 Type = "simple";
                 User = cfg.user;
                 Group = cfg.group;
-                # Use environment file if provided, otherwise use the deprecated oauthToken option
-                EnvironmentFile = lib.mkIf (cfg.environmentFile != null) [ cfg.environmentFile ];
-                Environment = lib.mkIf (cfg.environmentFile == null && cfg.oauthToken != "") [
-                  "PLDR_TOKEN=${lib.escapeShellArg cfg.oauthToken}"
-                ];
+                LoadCredential = [ "token:${cfg.authTokenFile}" ];
                 ExecStart = ''
                   ${cfg.package}/bin/plundrio run \
                     --target ${lib.escapeShellArg cfg.targetDir} \
@@ -124,6 +112,9 @@
                     --workers ${toString cfg.workerCount} \
                     --log-level ${cfg.logLevel}
                 '';
+                Environment = [
+                  "PLDR_TOKEN_FILE=%d/token"
+                ];
                 Restart = "on-failure";
                 RestartSec = "10s";
 
