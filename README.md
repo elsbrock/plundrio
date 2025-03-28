@@ -15,6 +15,15 @@ plundrio (`/ˈplʌndriˌoʊ/`) is a put.io download client designed to seamlessl
 integrate with the *arr stack (Sonarr, Radarr, Lidarr, etc.). Files are
 automatically added to put.io and downloaded to the local disk once complete.
 
+By using plundrio, you can benefit from faster downloads if the file is
+already cached by put.io, allowing you to download it locally immediately. This
+is especially useful if you have a low bandwidth connection, as you can easily
+saturate it by downloading from put.io instead of the original source.
+Additionally, if put.io already has the file cached, you can skip the initial
+download step from the origin to put.io, saving time and bandwidth. However, in
+all other cases, a direct download from the origin may be more beneficial, as
+put.io essentially performs the same download process.
+
 <h2>📋 Table of Contents</h2>
 
 - [🚀 Features](#-features)
