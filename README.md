@@ -62,7 +62,6 @@ put.io essentially performs the same download process.
 - 🌐 Stateless architecture; multiple instances per put.io account supported
 - ⚡ Fast and efficient downloads from put.io (with resume support)
 - 🔄 Parallel downloads with configurable worker count to maximize bandwidth
-- �️ Easy configuration and setup with multiple configuration methods
 - 🧹 Automatic cleanup of completed transfers
 - 🔒 Secure OAuth token handling for put.io authentication
 - 📊 Comprehensive transfer logging with detailed metadata for all transfers
@@ -184,6 +183,8 @@ docker run -d \
   -e PLDR_FOLDER=plundrio \
   ghcr.io/elsbrock/plundrio:latest
 ```
+
+The Docker image is available for both x86_64 and ARM64 architectures. Docker will automatically pull the correct version for your platform.
 
 ### From Releases
 

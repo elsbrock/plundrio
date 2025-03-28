@@ -67,41 +67,17 @@ jobs:
 
       - name: Tag ${{ matrix.arch }} Docker image
         run: |
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
 
       - name: Docker Metadata
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
-            ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
+            ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+            ghcr.io/${{ github.repository }}:latest
 
       - name: Push ${{ matrix.arch }} Docker image
         run: |
           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-latest
-          docker push ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.event.release.tag_name }}
-
-  manifests:
-    name: Create Multi-arch Manifests
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    if: github.event_name == 'release'
-    needs: docker
-    steps:
-      - name: Login to GitHub Container Registry
-        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      - name: Create and push Docker manifests
-        run: |
-          docker manifest create ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:x86_64-latest \
-            ghcr.io/${{ github.repository }}:aarch64-latest
-          docker manifest push ghcr.io/${{ github.repository }}:latest
-
-          docker manifest create ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }} \
-            ghcr.io/${{ github.repository }}:x86_64-${{ github.event.release.tag_name }} \
-            ghcr.io/${{ github.repository }}:aarch64-${{ github.event.release.tag_name }}
-          docker manifest push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+          docker push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
