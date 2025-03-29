@@ -86,14 +86,20 @@ jobs:
       - name: Log in to GHCR
         run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Tag and Push Architecture-Specific Image
+      - name: Tag and Push Docker Image
+        id: tag_push_image
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           IMAGE_ID=$(docker images --filter "dangling=false" --format "{{.ID}}" | head -n 1)
           echo "Loaded Image ID: $IMAGE_ID"
 
-          echo "Generated base tags: ${{ steps.meta.outputs.tags }}"
-          for BASE_TAG in ${{ steps.meta.outputs.tags }}; do
-            ARCH_TAG="${BASE_TAG}-${{ matrix.docker_arch_suffix }}"
+          echo "Generated base tags:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r BASE_TAG; do
+            if [ -z "$BASE_TAG" ]; then continue; fi # Skip empty lines if any
+            ARCH_TAG="${BASE_TAG}-${ARCH}" # Use env var ARCH here
             echo "Tagging $IMAGE_ID as $ARCH_TAG"
             docker tag "$IMAGE_ID" "$ARCH_TAG"
             echo "Pushing $ARCH_TAG"
