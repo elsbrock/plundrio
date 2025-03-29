@@ -188,7 +188,7 @@ The Docker image is available for both x86_64 and ARM64 architectures. Docker wi
 
 ### From Releases
 
-Download the latest binary for your platform from the [releases page](https://github.com/elsbrock/plundrio/releases). We provide packages and Docker images for both x86_64-linux and aarch64-linux platforms.
+Download the latest binary package for your platform (x86_64-linux or aarch64-linux) from the [releases page](https://github.com/elsbrock/plundrio/releases). The multi-arch Docker image is available on GHCR (see [Using Docker](#using-docker)).
 
 ## 🚀 Getting Started
 
