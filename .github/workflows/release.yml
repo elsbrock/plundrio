@@ -40,44 +40,117 @@ jobs:
           asset_content_type: application/octet-stream
 
   docker:
-    name: Release Docker Images
+    name: Build Docker Image (${{ matrix.arch }})
+    needs: [binaries]
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       packages: write
-    if: github.event_name == 'release'
-    needs: binaries
+      id-token: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            pkg: plundrio-docker
+            nix_package: plundrio-docker
+            docker_platform: linux/amd64
+            docker_arch_suffix: amd64
           - arch: aarch64
-            pkg: plundrio-docker-aarch64
+            nix_package: plundrio-docker-aarch64
+            docker_platform: linux/arm64
+            docker_arch_suffix: arm64
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
+        with:
+          fail-mode: true
 
-      - name: Build ${{ matrix.arch }} Docker image
-        run: nix build .#${{ matrix.pkg }}
+      - name: Build Docker image with Nix
+        run: nix build .#${{ matrix.nix_package }}
 
-      - name: Load ${{ matrix.arch }} Docker image
+      - name: Load Docker image
         run: docker load < result
 
-      - name: Tag ${{ matrix.arch }} Docker image
-        run: |
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
-          docker tag $(docker images -q | head -1) ghcr.io/${{ github.repository }}:latest
-
-      - name: Docker Metadata
+      - name: Docker meta
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
-            ghcr.io/${{ github.repository }}:latest
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
-      - name: Push ${{ matrix.arch }} Docker image
+      - name: Log in to GHCR
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Tag and Push Architecture-Specific Image
         run: |
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker push ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}
+          IMAGE_ID=$(docker images --filter "dangling=false" --format "{{.ID}}" | head -n 1)
+          echo "Loaded Image ID: $IMAGE_ID"
+
+          echo "Generated base tags: ${{ steps.meta.outputs.tags }}"
+          for BASE_TAG in ${{ steps.meta.outputs.tags }}; do
+            ARCH_TAG="${BASE_TAG}-${{ matrix.docker_arch_suffix }}"
+            echo "Tagging $IMAGE_ID as $ARCH_TAG"
+            docker tag "$IMAGE_ID" "$ARCH_TAG"
+            echo "Pushing $ARCH_TAG"
+            docker push "$ARCH_TAG"
+          done
+
+  manifests:
+    name: Create Multi-Arch Manifests
+    needs: [docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Docker meta for manifest
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=${{ github.event.repository.name }}
+            org.opencontainers.image.description=${{ github.event.repository.description }}
+            org.opencontainers.image.url=${{ github.event.repository.html_url }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.licenses=${{ github.event.repository.license.spdx_id }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+
+      - name: Log in to GHCR
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create and Push Multi-Arch Manifests
+        run: |
+          echo "Base tags for manifests: ${{ steps.meta.outputs.tags }}"
+          echo "Annotations to apply: ${{ steps.meta.outputs.annotations }}"
+
+          ANNOTATION_FLAGS=""
+          for ANN in ${{ steps.meta.outputs.annotations }}; do
+            ANNOTATION_FLAGS="$ANNOTATION_FLAGS --annotation ${ANN#manifest:}"
+          done
+          echo "Annotation flags: $ANNOTATION_FLAGS"
+
+          for FINAL_TAG in ${{ steps.meta.outputs.tags }}; do
+            echo "Processing manifest for $FINAL_TAG"
+            docker manifest create "$FINAL_TAG" \
+              "${FINAL_TAG}-amd64" \
+              "${FINAL_TAG}-arm64"
+
+            if [ -n "$ANNOTATION_FLAGS" ]; then
+              echo "Annotating $FINAL_TAG"
+              docker manifest annotate "$FINAL_TAG" $ANNOTATION_FLAGS
+            fi
+
+            echo "Pushing manifest $FINAL_TAG"
+            docker manifest push "$FINAL_TAG"
+          done
