@@ -21,7 +21,7 @@ jobs:
             pkg: plundrio-aarch64
             suffix: aarch64-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
@@ -62,7 +62,7 @@ jobs:
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/flake-checker-action@main
         with:
