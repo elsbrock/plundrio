@@ -60,6 +60,8 @@ func (m *Manager) monitorGrabDownloadProgress(ctx context.Context, state *Downlo
 					// Update transfer context with downloaded bytes if it exists
 					if exists && bytesDelta > 0 {
 						transferCtx.DownloadedSize += bytesDelta
+						transferCtx.LocalSpeed = speedMBps * 1024 * 1024
+						transferCtx.LocalETA = state.ETA
 
 						log.Debug("download").
 							Str("file_name", state.Name).
