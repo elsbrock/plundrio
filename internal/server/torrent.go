@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -387,7 +389,41 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 				Bool("delete_local_data", params.DeleteLocalData).
 				Msg("Transfer removed")
 		}
+
+		// Delete local files if requested (closes #23)
+		if params.DeleteLocalData {
+			if err := deleteLocalData(s.cfg.TargetDir, transfer.Name); err != nil {
+				log.Error("rpc").
+					Str("operation", "torrent-remove").
+					Str("transfer_name", transfer.Name).
+					Err(err).
+					Msg("Failed to delete local files")
+			} else {
+				log.Info("rpc").
+					Str("operation", "torrent-remove").
+					Str("transfer_name", transfer.Name).
+					Msg("Deleted local files")
+			}
+		}
 	}
 
 	return struct{}{}, nil
+}
+
+// deleteLocalData removes downloaded files for a transfer from the target directory.
+// It validates that the resolved path is inside targetDir to prevent path traversal.
+func deleteLocalData(targetDir, transferName string) error {
+	localPath := filepath.Join(targetDir, transferName)
+	absLocal, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve local path %q: %w", localPath, err)
+	}
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target dir %q: %w", targetDir, err)
+	}
+	if !strings.HasPrefix(absLocal, absTarget+string(os.PathSeparator)) {
+		return fmt.Errorf("path %q is outside target directory %q", absLocal, absTarget)
+	}
+	return os.RemoveAll(absLocal)
 }
