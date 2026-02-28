@@ -114,25 +114,6 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Docker meta for manifest
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable=true
-          # Add OCI annotations (these apply to the manifest list)
-          annotations: |
-            org.opencontainers.image.title=${{ github.event.repository.name }}
-            org.opencontainers.image.description=${{ github.event.repository.description }}
-            org.opencontainers.image.url=${{ github.event.repository.html_url }}
-            org.opencontainers.image.source=${{ github.event.repository.clone_url }}
-            org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.licenses=${{ github.event.repository.license.spdx_id }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ github.ref_name }}
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -141,34 +122,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Manifest and Push
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          echo "Base tags for manifests:"
-          echo "${{ steps.meta.outputs.tags }}"
-          echo "Annotations to apply:"
-          echo "${{ steps.meta.outputs.annotations }}"
-
-          # Build the annotation arguments using a bash array for safety
-          ANNOTATION_ARGS=()
-          while IFS= read -r ANN; do
-            [ -z "$ANN" ] && continue
-            ANNOTATION_ARGS+=(--annotation "${ANN#manifest:}")
-          done <<< "${{ steps.meta.outputs.annotations }}"
-          echo "Annotation arguments array count: ${#ANNOTATION_ARGS[@]}"
-
-          # Process unique tags
-          while IFS= read -r FINAL_TAG; do
-            [ -z "$FINAL_TAG" ] && continue
-
-            echo "Processing manifest for $FINAL_TAG"
-            docker manifest create "$FINAL_TAG" \
-              "${FINAL_TAG}-amd64" \
-              "${FINAL_TAG}-arm64"
-
-            if [ ${#ANNOTATION_ARGS[@]} -gt 0 ]; then
-              echo "Annotating $FINAL_TAG"
-              docker manifest annotate "$FINAL_TAG" "${ANNOTATION_ARGS[@]}"
-            fi
-
-            echo "Pushing manifest $FINAL_TAG"
-            docker manifest push "$FINAL_TAG"
-          done <<< "$(echo "${{ steps.meta.outputs.tags }}" | sort -u)"
+          for TAG in "${IMAGE}:${VERSION}" "${IMAGE}:latest"; do
+            echo "Creating manifest for $TAG"
+            docker manifest create "$TAG" \
+              "${TAG}-amd64" \
+              "${TAG}-arm64"
+            docker manifest push "$TAG"
+          done
