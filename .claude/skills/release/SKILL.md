@@ -1,6 +1,7 @@
 ---
-allowed-tools: Bash, Read, Edit, Glob, Grep, Agent, WebFetch
+name: release
 description: Draft a new GitHub release with version bump
+allowed-tools: Bash, Read, Edit, Glob, Grep, Task, WebFetch
 ---
 
 # Release Workflow
