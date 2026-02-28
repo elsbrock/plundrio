@@ -43,7 +43,7 @@ func (m *Manager) monitorGrabDownloadProgress(ctx context.Context, state *Downlo
 					if elapsed > 0 {
 						speed := float64(state.downloaded) / elapsed
 						remaining := float64(totalSize - state.downloaded)
-						if speed > 0 { // Avoid division by zero
+						if speed > 0 {
 							etaSeconds := remaining / speed
 							state.ETA = time.Now().Add(time.Duration(etaSeconds) * time.Second)
 						}
@@ -59,16 +59,17 @@ func (m *Manager) monitorGrabDownloadProgress(ctx context.Context, state *Downlo
 
 					// Update transfer context with downloaded bytes if it exists
 					if exists && bytesDelta > 0 {
-						transferCtx.DownloadedSize += bytesDelta
-						transferCtx.LocalSpeed = speedMBps * 1024 * 1024
-						transferCtx.LocalETA = state.ETA
+						transferCtx.AddDownloadedBytes(bytesDelta)
+						transferCtx.SetLocalProgress(speedMBps*1024*1024, state.ETA)
+
+						downloadedSize, transferTotal, _, _ := transferCtx.GetProgress()
 
 						log.Debug("download").
 							Str("file_name", state.Name).
 							Int64("transfer_id", state.TransferID).
 							Int64("bytes_delta", bytesDelta).
-							Int64("transfer_downloaded", transferCtx.DownloadedSize).
-							Int64("transfer_total", transferCtx.TotalSize).
+							Int64("transfer_downloaded", downloadedSize).
+							Int64("transfer_total", transferTotal).
 							Msg("Updated transfer downloaded bytes")
 					}
 

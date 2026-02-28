@@ -1,34 +1,15 @@
 package server
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
-// mapPutioStatus converts Put.io transfer status to transmission status
-func (s *Server) mapPutioStatus(status string) int {
-	switch status {
-	case "IN_QUEUE":
-		return 3 // TR_STATUS_DOWNLOAD_WAITING
-	case "DOWNLOADING":
-		return 4 // TR_STATUS_DOWNLOAD
-	case "COMPLETING":
-		return 4 // TR_STATUS_DOWNLOAD
-	case "SEEDING":
-		return 6 // TR_STATUS_SEED
-	case "COMPLETED":
-		return 6 // TR_STATUS_SEED
-	case "ERROR":
-		return 0 // TR_STATUS_STOPPED
-	default:
-		return 0 // TR_STATUS_STOPPED
-	}
-}
-
 // checkDiskQuota checks disk usage and handles quota warnings
 func (s *Server) checkDiskQuota() (bool, error) {
-	account, err := s.client.GetAccountInfo()
+	account, err := s.client.GetAccountInfo(context.Background())
 	if err != nil {
 		return false, fmt.Errorf("failed to check disk quota: %w", err)
 	}
@@ -39,12 +20,12 @@ func (s *Server) checkDiskQuota() (bool, error) {
 	// Consider over quota if usage is above 95%
 	isOverQuota := usagePercent >= 95
 
-	if isOverQuota && !s.quotaWarning {
+	if isOverQuota && !s.quotaWarning.Load() {
 		log.Warn("server").Msgf("Put.io account is over quota (%.1f%% used)", usagePercent)
-		s.quotaWarning = true
-	} else if !isOverQuota && s.quotaWarning {
+		s.quotaWarning.Store(true)
+	} else if !isOverQuota && s.quotaWarning.Load() {
 		// Reset warning when usage drops
-		s.quotaWarning = false
+		s.quotaWarning.Store(false)
 	}
 
 	return isOverQuota, nil

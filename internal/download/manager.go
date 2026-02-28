@@ -1,12 +1,23 @@
 package download
 
 import (
+	"context"
 	"sync"
 
-	"github.com/elsbrock/plundrio/internal/api"
+	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/config"
 	"github.com/elsbrock/plundrio/internal/log"
 )
+
+// PutioClient abstracts the put.io API methods used by the download manager.
+type PutioClient interface {
+	GetTransfers(ctx context.Context) ([]*putio.Transfer, error)
+	GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error)
+	RetryTransfer(ctx context.Context, transferID int64) (*putio.Transfer, error)
+	DeleteTransfer(ctx context.Context, transferID int64) error
+	DeleteFile(ctx context.Context, fileID int64) error
+	GetDownloadURL(ctx context.Context, fileID int64) (string, error)
+}
 
 // Manager handles downloading completed transfers from Put.io.
 // It supports concurrent downloads, progress tracking, and automatic cleanup
@@ -14,12 +25,15 @@ import (
 // downloads efficiently while maintaining control over system resources.
 type Manager struct {
 	cfg      *config.Config
-	client   *api.Client
+	client   PutioClient
 	dlConfig *DownloadConfig // Download-specific configuration
 
 	coordinator *TransferCoordinator // Coordinates transfer lifecycle
 	categories  *CategoryStore       // Maps transfer hash → category subfolder
 	activeFiles sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
+
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	stopChan chan struct{}
 	stopOnce sync.Once
@@ -34,14 +48,26 @@ type Manager struct {
 	processor *TransferProcessor // Handles transfer processing
 }
 
-// GetTransferProcessor returns the manager's transfer processor
-func (m *Manager) GetTransferProcessor() *TransferProcessor {
-	return m.processor
+// Context returns the manager's lifecycle context.
+// Safe to call before Start (returns context.Background as fallback).
+func (m *Manager) Context() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
 }
 
-// GetCoordinator returns the manager's transfer coordinator
-func (m *Manager) GetCoordinator() *TransferCoordinator {
-	return m.coordinator
+// GetTransfers returns all tracked transfers for the configured folder.
+func (m *Manager) GetTransfers() []*putio.Transfer {
+	if m.processor == nil {
+		return nil
+	}
+	return m.processor.GetTransfers()
+}
+
+// GetTransferContext returns the lifecycle context for a transfer, if tracked.
+func (m *Manager) GetTransferContext(transferID int64) (*TransferContext, bool) {
+	return m.coordinator.GetTransferContext(transferID)
 }
 
 // SetCategory stores a category for a transfer hash.
@@ -60,7 +86,7 @@ func (m *Manager) RemoveCategory(hash string) {
 }
 
 // New creates a new download manager
-func New(cfg *config.Config, client *api.Client) *Manager {
+func New(cfg *config.Config, client PutioClient) *Manager {
 	// Get default download configuration
 	dlConfig := GetDefaultConfig()
 
@@ -81,8 +107,10 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 	}
 
 	// Initialize coordinator and processor
-	m.coordinator = NewTransferCoordinator(m)
 	m.processor = newTransferProcessor(m)
+	m.coordinator = NewTransferCoordinator(func(transferID int64) {
+		m.processor.MarkTransferProcessed(transferID)
+	})
 
 	// Register cleanup hooks
 	m.coordinator.RegisterCleanupHook(func(transferID int64) error {
@@ -92,8 +120,7 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		}
 
 		// Delete only the source file from Put.io, but keep the transfer
-		// This allows *arr applications to see completed transfers
-		if err := m.client.DeleteFile(state.FileID); err != nil {
+		if err := m.client.DeleteFile(m.Context(), state.FileID); err != nil {
 			log.Error("cleanup").
 				Int64("transfer_id", transferID).
 				Int64("file_id", state.FileID).
@@ -102,7 +129,6 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 			return err
 		}
 
-		// No longer delete the transfer - it will only be deleted when torrent-remove is called
 		log.Info("cleanup").
 			Int64("transfer_id", transferID).
 			Msg("Deleted source file")
@@ -122,6 +148,8 @@ func (m *Manager) Start() {
 	}
 	m.running = true
 	m.mu.Unlock()
+
+	m.ctx, m.cancel = context.WithCancel(context.Background())
 
 	m.categories.Load()
 
@@ -158,6 +186,8 @@ func (m *Manager) Stop() {
 	m.mu.Unlock()
 
 	m.stopOnce.Do(func() {
+		// Cancel context first so in-flight API calls abort
+		m.cancel()
 		// Signal workers to stop via stopChan
 		close(m.stopChan)
 		// Close jobs channel to prevent new submissions
@@ -229,7 +259,6 @@ func (m *Manager) cleanupTransfer(transferID int64) {
 }
 
 // handleFileCompletion updates transfer state when a file completes downloading
-// This is called for successful downloads only with the specific fileID that completed
 func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 	// First increment the completion counter in the transfer coordinator
 	if err := m.coordinator.FileCompleted(transferID); err != nil {
@@ -241,7 +270,6 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 		return
 	}
 
-	// Log detailed completion info
 	log.Debug("transfers").
 		Int64("transfer_id", transferID).
 		Int64("file_id", fileID).
@@ -256,26 +284,21 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 		log.Debug("transfers").
 			Int64("transfer_id", transferID).
 			Msg("Transfer context not found after completion")
-		return // Transfer context already gone
+		return
 	}
 
-	// Get transfer state under lock
-	ctx.mu.RLock()
-	isCompleted := ctx.State == TransferLifecycleCompleted
-	totalFiles := ctx.TotalFiles
-	completedFiles := ctx.CompletedFiles
-	ctx.mu.RUnlock()
+	state := ctx.GetState()
+	_, _, completedFiles, _ := ctx.GetProgress()
 
-	// Log transfer state
 	log.Debug("transfers").
 		Int64("id", transferID).
 		Int32("completed_files", completedFiles).
-		Int32("total_files", totalFiles).
-		Bool("is_completed_state", isCompleted).
+		Int32("total_files", ctx.TotalFiles).
+		Bool("is_completed_state", state == TransferLifecycleCompleted).
 		Msg("Transfer completion status")
 
 	// If the transfer is in completed state, check if all downloads are done
-	if isCompleted {
+	if state == TransferLifecycleCompleted {
 		// Count active files for this transfer
 		activeCount := 0
 		m.activeFiles.Range(func(key, value interface{}) bool {
@@ -308,7 +331,6 @@ func (m *Manager) handleFileCompletion(transferID int64, fileID int64) {
 }
 
 // handleFileFailure marks a file as failed in the transfer context
-// This is called when a file fails to download
 func (m *Manager) handleFileFailure(transferID int64) {
 	if err := m.coordinator.FileFailure(transferID); err != nil {
 		log.Error("transfers").

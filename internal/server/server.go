@@ -1,35 +1,57 @@
 package server
 
 import (
+	"context"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	_ "net/http/pprof"
 
-	"github.com/elsbrock/plundrio/internal/api"
+	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/config"
 	"github.com/elsbrock/plundrio/internal/download"
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
+// PutioClient abstracts the put.io API methods used by the RPC server.
+type PutioClient interface {
+	GetAccountInfo(ctx context.Context) (*putio.AccountInfo, error)
+	GetTransfers(ctx context.Context) ([]*putio.Transfer, error)
+	UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (string, error)
+	AddTransfer(ctx context.Context, magnetLink string, folderID int64) (string, error)
+	DeleteFile(ctx context.Context, fileID int64) error
+	DeleteTransfer(ctx context.Context, transferID int64) error
+}
+
+// DownloadService abstracts the download manager for the RPC server.
+type DownloadService interface {
+	GetTransfers() []*putio.Transfer
+	GetTransferContext(transferID int64) (*download.TransferContext, bool)
+	SetCategory(hash, category string)
+	GetCategory(hash string) string
+	RemoveCategory(hash string)
+	Stop()
+}
+
 // Server handles transmission-rpc requests
 type Server struct {
 	cfg          *config.Config
-	client       *api.Client
+	client       PutioClient
 	srv          *http.Server
 	quotaTicker  *time.Ticker
 	stopChan     chan struct{}
-	dlManager    *download.Manager
-	quotaWarning bool // tracks if we've already warned about quota
+	dlService    DownloadService
+	quotaWarning atomic.Bool // tracks if we've already warned about quota
 }
 
 // New creates a new RPC server
-func New(cfg *config.Config, client *api.Client, dlManager *download.Manager) *Server {
+func New(cfg *config.Config, client PutioClient, dlService DownloadService) *Server {
 	return &Server{
 		cfg:         cfg,
 		client:      client,
 		stopChan:    make(chan struct{}),
-		dlManager:   dlManager,
+		dlService:   dlService,
 		quotaTicker: time.NewTicker(15 * time.Minute),
 	}
 }
@@ -46,7 +68,7 @@ func (s *Server) Start() error {
 	}
 
 	// Get and log account info
-	account, err := s.client.GetAccountInfo()
+	account, err := s.client.GetAccountInfo(context.Background())
 	if err != nil {
 		log.Warn("server").Err(err).Msg("Failed to get account info")
 	} else {
@@ -88,8 +110,8 @@ func (s *Server) Stop() error {
 	s.quotaTicker.Stop()
 	close(s.stopChan)
 
-	// Stop the download manager
-	s.dlManager.Stop()
+	// Stop the download service
+	s.dlService.Stop()
 
 	if s.srv != nil {
 		return s.srv.Close()

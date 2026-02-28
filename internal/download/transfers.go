@@ -48,18 +48,14 @@ func newTransferProcessor(m *Manager) *TransferProcessor {
 // monitorTransfers periodically checks for completed transfers
 func (m *Manager) monitorTransfers() {
 	log.Debug("transfers").Msg("Starting transfer monitor")
-	processor := newTransferProcessor(m)
-
-	// Store the processor in the manager for access by other components
-	m.processor = processor
 
 	log.Debug("transfers").
-		Int64("folder_id", processor.folderID).
-		Str("target_dir", processor.targetDir).
+		Int64("folder_id", m.processor.folderID).
+		Str("target_dir", m.processor.targetDir).
 		Msg("Transfer processor initialized")
 
 	// Initial check
-	processor.checkTransfers()
+	m.processor.checkTransfers()
 
 	ticker := time.NewTicker(m.dlConfig.TransferCheckInterval)
 	defer ticker.Stop()
@@ -70,7 +66,7 @@ func (m *Manager) monitorTransfers() {
 			log.Debug("transfers").Msg("Transfer monitor stopping")
 			return
 		case <-ticker.C:
-			processor.checkTransfers()
+			m.processor.checkTransfers()
 		}
 	}
 }
@@ -79,7 +75,7 @@ func (m *Manager) monitorTransfers() {
 func (p *TransferProcessor) checkTransfers() {
 	log.Debug("transfers").Msg("Checking transfers")
 
-	transfers, err := p.manager.client.GetTransfers()
+	transfers, err := p.manager.client.GetTransfers(p.manager.Context())
 	if err != nil {
 		log.Error("transfers").Err(err).Msg("Failed to get transfers")
 		return
@@ -154,7 +150,7 @@ func (p *TransferProcessor) logAllTransfersDetails() {
 
 	for _, t := range allTransfers {
 		// Create a logger with common fields for all transfers
-		transferLogger := log.Info("transfers").
+		transferLogger := log.Debug("transfers").
 			Int64("id", t.ID).
 			Str("name", t.Name).
 			Str("status", t.Status).
@@ -307,7 +303,7 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 		Int64("file_id", transfer.FileID).
 		Msg("Processing transfer")
 
-	files, err := p.manager.client.GetAllTransferFiles(transfer.FileID)
+	files, err := p.manager.client.GetAllTransferFiles(p.manager.Context(), transfer.FileID)
 	if err != nil {
 		p.handleTransferError(transfer, err)
 		return
@@ -379,9 +375,7 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 	}
 
 	// Update the transfer context with total size
-	ctx.mu.Lock()
-	ctx.TotalSize = totalSize
-	ctx.mu.Unlock()
+	ctx.SetTotalSize(totalSize)
 
 	log.Info("transfers").
 		Int64("transfer_id", transfer.ID).
@@ -395,7 +389,6 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 			p.queueFileDownload(transfer, file)
 		} else {
 			// For files we don't need to download (already exist), mark as completed
-			// This ensures our file count tracking is accurate
 			if err := p.manager.coordinator.FileCompleted(transfer.ID); err != nil {
 				log.Error("transfers").
 					Int64("transfer_id", transfer.ID).
@@ -405,9 +398,7 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 			}
 
 			// For existing files, add their size to the downloaded size
-			ctx.mu.Lock()
-			ctx.DownloadedSize += file.Size
-			ctx.mu.Unlock()
+			ctx.AddDownloadedBytes(file.Size)
 
 			log.Debug("transfers").
 				Int64("transfer_id", transfer.ID).
@@ -485,7 +476,7 @@ func (p *TransferProcessor) initializeTransfer(transfer *putio.Transfer, filesTo
 
 // processErroredTransfers handles failed transfers with retry logic
 func (p *TransferProcessor) processErroredTransfers() {
-	const maxRetryAttempts = 3 // Maximum number of retry attempts
+	const maxRetryAttempts = 3
 
 	for _, transfer := range p.transfers["ERROR"] {
 		// Get current retry count
@@ -511,7 +502,7 @@ func (p *TransferProcessor) processErroredTransfers() {
 			logger.Msgf("Transfer errored, retrying (attempt %d of %d)", retryCount+1, maxRetryAttempts)
 
 			// Attempt to retry the transfer
-			retried, err := p.manager.client.RetryTransfer(transfer.ID)
+			retried, err := p.manager.client.RetryTransfer(p.manager.Context(), transfer.ID)
 			if err != nil {
 				log.Error("transfers").
 					Str("name", transfer.Name).
@@ -530,7 +521,7 @@ func (p *TransferProcessor) processErroredTransfers() {
 			logger.Msgf("Transfer errored, giving up after %d retry attempts", maxRetryAttempts)
 
 			// Delete the transfer after max retries
-			if err := p.manager.client.DeleteTransfer(transfer.ID); err != nil {
+			if err := p.manager.client.DeleteTransfer(p.manager.Context(), transfer.ID); err != nil {
 				log.Error("transfers").
 					Str("name", transfer.Name).
 					Int64("id", transfer.ID).
@@ -562,20 +553,14 @@ func (p *TransferProcessor) finalizeCompletedTransfers() {
 	// Get all active transfers from the coordinator
 	var pendingCleanup []int64
 
-	p.manager.coordinator.transfers.Range(func(key, value interface{}) bool {
-		transferID := key.(int64)
-		ctx := value.(*TransferContext)
+	p.manager.coordinator.RangeTransfers(func(transferID int64, ctx *TransferContext) bool {
 
-		// Check if this transfer is in Completed state but hasn't been cleaned up
-		ctx.mu.RLock()
-		isCompletedPending := ctx.State == TransferLifecycleCompleted
-		name := ctx.Name
-		ctx.mu.RUnlock()
+		state := ctx.GetState()
 
-		if isCompletedPending {
+		if state == TransferLifecycleCompleted {
 			log.Info("transfers").
 				Int64("id", transferID).
-				Str("name", name).
+				Str("name", ctx.Name).
 				Msg("Found completed transfer pending cleanup")
 			pendingCleanup = append(pendingCleanup, transferID)
 		}
@@ -588,7 +573,6 @@ func (p *TransferProcessor) finalizeCompletedTransfers() {
 			Int64("id", transferID).
 			Msg("Finalizing completed transfer")
 
-		// Call CompleteTransfer which will run cleanup hooks and delete the context
 		if err := p.manager.coordinator.CompleteTransfer(transferID); err != nil {
 			log.Error("transfers").
 				Int64("id", transferID).

@@ -121,37 +121,14 @@ func isTransientError(err error) bool {
 	return false
 }
 
-// configureGrabRequest configures a grab request with appropriate options
-func (m *Manager) configureGrabRequest(req *grab.Request) {
-	// Set request headers
-	req.HTTPRequest.Header.Set("User-Agent", "plundrio/1.0")
-	req.HTTPRequest.Header.Set("Accept", "*/*")
-	req.HTTPRequest.Header.Set("Connection", "keep-alive")
-
-	// Configure request options
-	req.NoCreateDirectories = false // Allow grab to create directories
-	req.SkipExisting = false        // Don't skip existing files
-	req.NoResume = false            // Allow resuming downloads
-}
-
 // downloadFile downloads a file from Put.io to the target directory using grab
 func (m *Manager) downloadFile(state *DownloadState) error {
-	// Create a context that's cancelled when stopChan is closed
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Set up cancellation from stopChan
-	go func() {
-		select {
-		case <-m.stopChan:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
+	// Derive context from manager's lifecycle context
+	ctx, cancel := context.WithCancel(m.Context())
 	defer cancel()
 
 	// Get download URL
-	url, err := m.client.GetDownloadURL(state.FileID)
+	url, err := m.client.GetDownloadURL(ctx, state.FileID)
 	if err != nil {
 		return fmt.Errorf("failed to get download URL: %w", err)
 	}
@@ -200,9 +177,6 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 	state.LastProgress = time.Now()
 	state.mu.Unlock()
 
-	// Configure the request
-	m.configureGrabRequest(req)
-
 	// Monitor download progress
 	go m.monitorGrabDownloadProgress(ctx, state, resp, done, progressTicker)
 
@@ -228,18 +202,27 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		totalSize := resp.Size()
 		averageSpeedMBps := (float64(totalSize) / 1024 / 1024) / elapsed
 
-		// Update transfer context with the completed file size
+		// Flush any remaining bytes not yet reported by the progress ticker.
+		// The ticker adds incremental deltas; this catches the gap between
+		// the last tick and actual completion so we don't double-count.
 		if transferCtx, exists := m.coordinator.GetTransferContext(state.TransferID); exists {
-			// Update downloaded size
-			transferCtx.DownloadedSize += totalSize
+			state.mu.Lock()
+			finalDelta := totalSize - state.downloaded
+			state.downloaded = totalSize
+			state.mu.Unlock()
 
+			if finalDelta > 0 {
+				transferCtx.AddDownloadedBytes(finalDelta)
+			}
+
+			downloadedSize, transferTotal, _, _ := transferCtx.GetProgress()
 			log.Debug("download").
 				Str("file_name", state.Name).
 				Int64("transfer_id", state.TransferID).
-				Int64("file_size", totalSize).
-				Int64("transfer_downloaded", transferCtx.DownloadedSize).
-				Int64("transfer_total", transferCtx.TotalSize).
-				Msg("Updated transfer with completed file size")
+				Int64("final_delta", finalDelta).
+				Int64("transfer_downloaded", downloadedSize).
+				Int64("transfer_total", transferTotal).
+				Msg("Flushed remaining download bytes")
 		}
 
 		log.Info("download").
@@ -257,5 +240,3 @@ func (m *Manager) downloadFile(state *DownloadState) error {
 		return NewDownloadCancelledError(state.Name, "context cancelled")
 	}
 }
-
-// No longer needed with grab library

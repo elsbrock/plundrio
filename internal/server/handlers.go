@@ -78,11 +78,11 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "torrent-add":
-		result, err = s.handleTorrentAdd(req.Arguments)
+		result, err = s.handleTorrentAdd(r.Context(), req.Arguments)
 	case "torrent-get":
-		result, err = s.handleTorrentGet(req.Arguments)
+		result, err = s.handleTorrentGet(r.Context(), req.Arguments)
 	case "torrent-remove":
-		result, err = s.handleTorrentRemove(req.Arguments)
+		result, err = s.handleTorrentRemove(r.Context(), req.Arguments)
 	case "session-get":
 		result = map[string]interface{}{
 			"download-dir":        s.cfg.TargetDir,

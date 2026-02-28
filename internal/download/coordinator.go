@@ -3,24 +3,32 @@ package download
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
 // TransferCoordinator manages the lifecycle of transfers and their associated downloads
 type TransferCoordinator struct {
-	transfers    sync.Map // map[int64]*TransferContext
-	manager      *Manager
-	cleanupHooks []func(int64) error
+	transfers           sync.Map // map[int64]*TransferContext
+	onTransferProcessed func(int64)
+	cleanupHooks        []func(int64) error
 }
 
-// NewTransferCoordinator creates a new transfer coordinator
-func NewTransferCoordinator(manager *Manager) *TransferCoordinator {
+// NewTransferCoordinator creates a new transfer coordinator.
+// onProcessed is called when a transfer reaches the Processed state.
+func NewTransferCoordinator(onProcessed func(int64)) *TransferCoordinator {
 	return &TransferCoordinator{
-		manager:      manager,
-		cleanupHooks: make([]func(int64) error, 0),
+		onTransferProcessed: onProcessed,
+		cleanupHooks:        make([]func(int64) error, 0),
 	}
+}
+
+// RangeTransfers calls fn for each tracked transfer context.
+// If fn returns false, iteration stops.
+func (tc *TransferCoordinator) RangeTransfers(fn func(transferID int64, ctx *TransferContext) bool) {
+	tc.transfers.Range(func(key, value interface{}) bool {
+		return fn(key.(int64), value.(*TransferContext))
+	})
 }
 
 // RegisterCleanupHook adds a function to be called during transfer cleanup
@@ -35,7 +43,7 @@ func (tc *TransferCoordinator) InitiateTransfer(id int64, name string, fileID in
 		Name:       name,
 		FileID:     fileID,
 		TotalFiles: int32(totalFiles),
-		State:      TransferLifecycleInitial,
+		state:      TransferLifecycleInitial,
 	}
 	tc.transfers.Store(id, ctx)
 
@@ -58,11 +66,11 @@ func (tc *TransferCoordinator) StartDownload(transferID int64) error {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
-	if ctx.State != TransferLifecycleInitial {
-		return fmt.Errorf("invalid state transition: %s -> Downloading", ctx.State)
+	if ctx.state != TransferLifecycleInitial {
+		return fmt.Errorf("invalid state transition: %s -> Downloading", ctx.state)
 	}
 
-	ctx.State = TransferLifecycleDownloading
+	ctx.state = TransferLifecycleDownloading
 	log.Info("transfer").
 		Int64("id", transferID).
 		Str("name", ctx.Name).
@@ -86,25 +94,26 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 	defer ctx.mu.Unlock()
 
 	// If transfer is already completed, just return
-	if ctx.State == TransferLifecycleCompleted {
+	if ctx.state == TransferLifecycleCompleted {
 		return nil
 	}
 
 	// Allow file completions even if the transfer is in a failed state
 	// This lets us track progress even if some files failed
-	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleFailed {
-		return fmt.Errorf("cannot complete file: transfer %d is in state %s", transferID, ctx.State)
+	if ctx.state != TransferLifecycleDownloading && ctx.state != TransferLifecycleFailed {
+		return fmt.Errorf("cannot complete file: transfer %d is in state %s", transferID, ctx.state)
 	}
 
-	completed := atomic.AddInt32(&ctx.CompletedFiles, 1)
+	ctx.completedFiles++
+	completed := ctx.completedFiles
 
 	// Calculate progress based on file count
 	fileProgress := float64(completed) / float64(ctx.TotalFiles) * 100
 
 	// Calculate progress based on bytes if we have size information
 	var bytesProgress float64
-	if ctx.TotalSize > 0 {
-		bytesProgress = float64(ctx.DownloadedSize) / float64(ctx.TotalSize) * 100
+	if ctx.totalSize > 0 {
+		bytesProgress = float64(ctx.downloadedSize) / float64(ctx.totalSize) * 100
 	}
 
 	log.Info("transfer").
@@ -113,36 +122,30 @@ func (tc *TransferCoordinator) FileCompleted(transferID int64) error {
 		Int32("completed", completed).
 		Int32("total", ctx.TotalFiles).
 		Float64("file_progress", fileProgress).
-		Int64("downloaded_bytes", ctx.DownloadedSize).
-		Int64("total_bytes", ctx.TotalSize).
+		Int64("downloaded_bytes", ctx.downloadedSize).
+		Int64("total_bytes", ctx.totalSize).
 		Float64("bytes_progress", bytesProgress).
 		Msg("File completed")
 
 	// Check if all files are done (completed + failed = total)
-	if completed+ctx.FailedFiles >= ctx.TotalFiles {
+	if completed+ctx.failedFiles >= ctx.TotalFiles {
 		// Only mark as completed if there are no failed files
-		if ctx.FailedFiles == 0 {
-			// We already have the lock, so just update the state
-			// BUT don't remove the transfer context yet - active downloads may still need it
-			ctx.State = TransferLifecycleCompleted
+		if ctx.failedFiles == 0 {
+			ctx.state = TransferLifecycleCompleted
 			log.Info("transfer").
 				Int64("id", transferID).
 				Str("name", ctx.Name).
 				Int32("completed", completed).
 				Int32("total", ctx.TotalFiles).
-				Int64("downloaded_bytes", ctx.DownloadedSize).
-				Int64("total_bytes", ctx.TotalSize).
+				Int64("downloaded_bytes", ctx.downloadedSize).
+				Int64("total_bytes", ctx.totalSize).
 				Msg("Transfer marked as completed, waiting for final cleanup")
-
-			// The actual cleanup and transfer context removal will happen
-			// when all downloads have explicitly finished and CompleteTransfer is called
 		} else {
-			// If there are failed files, mark as failed but don't delete
-			ctx.State = TransferLifecycleFailed
+			ctx.state = TransferLifecycleFailed
 			log.Info("transfer").
 				Int64("id", transferID).
 				Str("name", ctx.Name).
-				Int32("failed", ctx.FailedFiles).
+				Int32("failed", ctx.failedFiles).
 				Int32("total", ctx.TotalFiles).
 				Msg("Transfer has failed files, keeping for retry")
 		}
@@ -166,17 +169,18 @@ func (tc *TransferCoordinator) FileFailure(transferID int64) error {
 	defer ctx.mu.Unlock()
 
 	// If transfer is already completed, just return
-	if ctx.State == TransferLifecycleCompleted {
+	if ctx.state == TransferLifecycleCompleted {
 		return nil
 	}
 
 	// Increment failed files counter
-	failed := atomic.AddInt32(&ctx.FailedFiles, 1)
-	completed := ctx.CompletedFiles
+	ctx.failedFiles++
+	failed := ctx.failedFiles
+	completed := ctx.completedFiles
 	total := ctx.TotalFiles
 
 	// Mark transfer as failed but don't delete it
-	ctx.State = TransferLifecycleFailed
+	ctx.state = TransferLifecycleFailed
 
 	log.Error("transfer").
 		Int64("id", transferID).
@@ -212,27 +216,24 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	defer ctx.mu.Unlock()
 
 	// Allow completion from both Downloading and Completed states
-	// This handles both:
-	// 1. Normal completion directly from Downloading
-	// 2. Final cleanup for transfers already marked Completed but waiting for active downloads
-	if ctx.State != TransferLifecycleDownloading && ctx.State != TransferLifecycleCompleted {
-		return fmt.Errorf("invalid state transition: %s -> Completed", ctx.State)
+	if ctx.state != TransferLifecycleDownloading && ctx.state != TransferLifecycleCompleted {
+		return fmt.Errorf("invalid state transition: %s -> Completed", ctx.state)
 	}
 
 	// Make sure it's marked as completed (might already be)
-	ctx.State = TransferLifecycleCompleted
+	ctx.state = TransferLifecycleCompleted
 
 	// Double-check that all files are actually completed
-	if ctx.CompletedFiles+ctx.FailedFiles < ctx.TotalFiles {
+	if ctx.completedFiles+ctx.failedFiles < ctx.TotalFiles {
 		log.Warn("transfer").
 			Int64("id", transferID).
 			Str("name", ctx.Name).
-			Int32("completed", ctx.CompletedFiles).
-			Int32("failed", ctx.FailedFiles).
+			Int32("completed", ctx.completedFiles).
+			Int32("failed", ctx.failedFiles).
 			Int32("total", ctx.TotalFiles).
 			Msg("Attempting to complete transfer before all files are done")
 		return fmt.Errorf("cannot complete transfer: %d/%d files still pending",
-			ctx.TotalFiles-(ctx.CompletedFiles+ctx.FailedFiles), ctx.TotalFiles)
+			ctx.TotalFiles-(ctx.completedFiles+ctx.failedFiles), ctx.TotalFiles)
 	}
 
 	log.Info("transfer").
@@ -251,10 +252,10 @@ func (tc *TransferCoordinator) CompleteTransfer(transferID int64) error {
 	}
 
 	// Mark the transfer as processed instead of removing it
-	ctx.State = TransferLifecycleProcessed
+	ctx.state = TransferLifecycleProcessed
 
-	// Mark the transfer as processed in the processor
-	tc.manager.GetTransferProcessor().MarkTransferProcessed(transferID)
+	// Notify that the transfer has been processed
+	tc.onTransferProcessed(transferID)
 
 	log.Info("transfer").
 		Int64("id", transferID).
@@ -276,9 +277,8 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 
 	// Check if this is a cancellation
 	if downloadErr, ok := err.(*DownloadError); ok && downloadErr.Type == "DownloadCancelled" {
-		// For cancellations, just mark as cancelled but keep the transfer
-		ctx.State = TransferLifecycleCancelled
-		ctx.Error = err
+		ctx.state = TransferLifecycleCancelled
+		ctx.err = err
 		log.Info("transfer").
 			Int64("id", transferID).
 			Str("name", ctx.Name).
@@ -287,9 +287,8 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 	}
 
 	// For real failures, mark as failed but don't clean up
-	// We'll keep the transfer context so we can retry later
-	ctx.State = TransferLifecycleFailed
-	ctx.Error = err
+	ctx.state = TransferLifecycleFailed
+	ctx.err = err
 
 	log.Error("transfer").
 		Int64("id", transferID).
@@ -297,8 +296,6 @@ func (tc *TransferCoordinator) FailTransfer(transferID int64, err error) error {
 		Err(err).
 		Msg("Transfer failed but keeping context for retry")
 
-	// Don't run cleanup hooks or delete the transfer context
-	// This allows other files to continue downloading and we can retry failed files later
 	return nil
 }
 
@@ -307,20 +304,9 @@ func (tc *TransferCoordinator) GetTransferContext(transferID int64) (*TransferCo
 	if value, ok := tc.transfers.Load(transferID); ok {
 		return value.(*TransferContext), true
 	}
-	// Add debug logging when transfer context is not found
 	log.Debug("transfer").
 		Int64("id", transferID).
 		Msg("Transfer context not found in coordinator")
-
-	// Debug: List all known transfers
-	var knownTransfers []int64
-	tc.transfers.Range(func(key, value interface{}) bool {
-		knownTransfers = append(knownTransfers, key.(int64))
-		return true
-	})
-	log.Debug("transfer").
-		Interface("known_transfers", knownTransfers).
-		Msg("Currently tracked transfers")
 
 	return nil, false
 }

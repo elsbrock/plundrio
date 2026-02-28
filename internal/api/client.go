@@ -12,24 +12,21 @@ import (
 // Client wraps the official Put.io client
 type Client struct {
 	client *putio.Client
-	ctx    context.Context
 }
 
 // NewClient creates a new Put.io API client
 func NewClient(oauthToken string) *Client {
-	ctx := context.Background()
 	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: oauthToken})
-	oauthClient := oauth2.NewClient(ctx, tokenSource)
+	oauthClient := oauth2.NewClient(context.Background(), tokenSource)
 
 	return &Client{
 		client: putio.NewClient(oauthClient),
-		ctx:    ctx,
 	}
 }
 
 // Authenticate verifies the OAuth token by fetching account info
-func (c *Client) Authenticate() error {
-	account, err := c.client.Account.Info(c.ctx)
+func (c *Client) Authenticate(ctx context.Context) error {
+	account, err := c.client.Account.Info(ctx)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -43,20 +40,20 @@ func (c *Client) Authenticate() error {
 }
 
 // GetAccountInfo returns the Put.io account information
-func (c *Client) GetAccountInfo() (*putio.AccountInfo, error) {
-	account, err := c.client.Account.Info(c.ctx)
+func (c *Client) GetAccountInfo(ctx context.Context) (*putio.AccountInfo, error) {
+	account, err := c.client.Account.Info(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get account info: %w", err)
 	}
 	return &account, nil
 }
 
 // EnsureFolder creates a folder if it doesn't exist or returns the ID if it does
-func (c *Client) EnsureFolder(name string) (int64, error) {
+func (c *Client) EnsureFolder(ctx context.Context, name string) (int64, error) {
 	// List files at root to find folder
-	files, _, err := c.client.Files.List(c.ctx, 0)
+	files, _, err := c.client.Files.List(ctx, 0)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ensure folder: %w", err)
 	}
 
 	// Check if folder exists
@@ -67,19 +64,19 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 	}
 
 	// Create folder if it doesn't exist
-	folder, err := c.client.Files.CreateFolder(c.ctx, name, 0)
+	folder, err := c.client.Files.CreateFolder(ctx, name, 0)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ensure folder: %w", err)
 	}
 
 	return folder.ID, nil
 }
 
 // AddTransfer adds a new transfer (torrent) to Put.io and returns its hash.
-func (c *Client) AddTransfer(magnetLink string, folderID int64) (string, error) {
-	transfer, err := c.client.Transfers.Add(c.ctx, magnetLink, folderID, "")
+func (c *Client) AddTransfer(ctx context.Context, magnetLink string, folderID int64) (string, error) {
+	transfer, err := c.client.Transfers.Add(ctx, magnetLink, folderID, "")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("add transfer: %w", err)
 	}
 
 	if transfer.Status == "ERROR" {
@@ -90,10 +87,10 @@ func (c *Client) AddTransfer(magnetLink string, folderID int64) (string, error) 
 }
 
 // GetTransfers returns the list of current transfers
-func (c *Client) GetTransfers() ([]*putio.Transfer, error) {
-	transfers, err := c.client.Transfers.List(c.ctx)
+func (c *Client) GetTransfers(ctx context.Context) ([]*putio.Transfer, error) {
+	transfers, err := c.client.Transfers.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get transfers: %w", err)
 	}
 
 	// Convert []putio.Transfer to []*putio.Transfer
@@ -105,28 +102,27 @@ func (c *Client) GetTransfers() ([]*putio.Transfer, error) {
 }
 
 // GetDownloadURL gets the download URL for a file
-func (c *Client) GetDownloadURL(fileID int64) (string, error) {
-	url, err := c.client.Files.URL(c.ctx, fileID, false)
+func (c *Client) GetDownloadURL(ctx context.Context, fileID int64) (string, error) {
+	url, err := c.client.Files.URL(ctx, fileID, false)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get download URL: %w", err)
 	}
 	return url, nil
 }
 
 // DeleteTransfer removes a transfer from Put.io
-func (c *Client) DeleteTransfer(transferID int64) error {
-	err := c.client.Transfers.Cancel(c.ctx, transferID)
-	if err != nil {
-		return err
+func (c *Client) DeleteTransfer(ctx context.Context, transferID int64) error {
+	if err := c.client.Transfers.Cancel(ctx, transferID); err != nil {
+		return fmt.Errorf("cancel transfer: %w", err)
 	}
 	return nil
 }
 
 // GetFiles gets the contents of a folder
-func (c *Client) GetFiles(folderID int64) ([]*putio.File, error) {
-	files, _, err := c.client.Files.List(c.ctx, folderID)
+func (c *Client) GetFiles(ctx context.Context, folderID int64) ([]*putio.File, error) {
+	files, _, err := c.client.Files.List(ctx, folderID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list files: %w", err)
 	}
 
 	// Convert []putio.File to []*putio.File
@@ -138,19 +134,18 @@ func (c *Client) GetFiles(folderID int64) ([]*putio.File, error) {
 }
 
 // DeleteFile removes a file from Put.io
-func (c *Client) DeleteFile(fileID int64) error {
-	err := c.client.Files.Delete(c.ctx, fileID)
-	if err != nil {
-		return err
+func (c *Client) DeleteFile(ctx context.Context, fileID int64) error {
+	if err := c.client.Files.Delete(ctx, fileID); err != nil {
+		return fmt.Errorf("delete file: %w", err)
 	}
 	return nil
 }
 
 // UploadFile uploads a torrent file to Put.io and returns the transfer hash
 // if one was created.
-func (c *Client) UploadFile(data []byte, filename string, folderID int64) (string, error) {
+func (c *Client) UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (string, error) {
 	reader := bytes.NewReader(data)
-	upload, err := c.client.Files.Upload(c.ctx, reader, filename, folderID)
+	upload, err := c.client.Files.Upload(ctx, reader, filename, folderID)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload file: %w", err)
 	}
@@ -161,11 +156,11 @@ func (c *Client) UploadFile(data []byte, filename string, folderID int64) (strin
 }
 
 // GetAllTransferFiles recursively gets all files in a transfer
-func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
+func (c *Client) GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error) {
 	// First check if the fileID is a file itself
-	file, err := c.client.Files.Get(c.ctx, fileID)
+	file, err := c.client.Files.Get(ctx, fileID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get transfer files: %w", err)
 	}
 
 	// If it's a single file, return it directly
@@ -178,7 +173,7 @@ func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
 	var getFiles func(id int64) error
 
 	getFiles = func(id int64) error {
-		files, err := c.GetFiles(id)
+		files, err := c.GetFiles(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -203,8 +198,8 @@ func (c *Client) GetAllTransferFiles(fileID int64) ([]*putio.File, error) {
 }
 
 // RetryTransfer retries a failed transfer
-func (c *Client) RetryTransfer(transferID int64) (*putio.Transfer, error) {
-	transfer, err := c.client.Transfers.Retry(c.ctx, transferID)
+func (c *Client) RetryTransfer(ctx context.Context, transferID int64) (*putio.Transfer, error) {
+	transfer, err := c.client.Transfers.Retry(ctx, transferID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retry transfer: %w", err)
 	}

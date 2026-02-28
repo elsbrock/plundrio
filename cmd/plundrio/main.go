@@ -114,14 +114,14 @@ var runCmd = &cobra.Command{
 
 		// Authenticate and get account info
 		log.Info("auth").Msg("Authenticating with Put.io...")
-		if err := client.Authenticate(); err != nil {
+		if err := client.Authenticate(context.Background()); err != nil {
 			log.Fatal("auth").Err(err).Msg("Failed to authenticate with Put.io")
 		}
 		log.Info("auth").Msg("Authentication successful")
 
 		// Create/get folder ID
 		log.Info("setup").Str("folder", cfg.PutioFolder).Msg("Setting up Put.io folder")
-		folderID, err := client.EnsureFolder(cfg.PutioFolder)
+		folderID, err := client.EnsureFolder(context.Background(), cfg.PutioFolder)
 		if err != nil {
 			log.Fatal("setup").Str("folder", cfg.PutioFolder).Err(err).Msg("Failed to create/get folder")
 		}

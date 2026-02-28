@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/elsbrock/go-putio"
+	"github.com/elsbrock/plundrio/internal/download"
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
@@ -29,8 +31,8 @@ func extractCategory(targetDir, downloadDir string) string {
 }
 
 // findTransferByHash finds a transfer by its hash string
-func (s *Server) findTransferByHash(hash string) (*putio.Transfer, error) {
-	transfers, err := s.client.GetTransfers()
+func (s *Server) findTransferByHash(ctx context.Context, hash string) (*putio.Transfer, error) {
+	transfers, err := s.client.GetTransfers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +45,7 @@ func (s *Server) findTransferByHash(hash string) (*putio.Transfer, error) {
 }
 
 // handleTorrentAdd processes torrent-add requests
-func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
+func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (interface{}, error) {
 	var params struct {
 		Filename    string `json:"filename"`    // For .torrent files
 		MetaInfo    string `json:"metainfo"`    // Base64 encoded .torrent
@@ -72,7 +74,7 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		if name == "" {
 			name = "unknown.torrent"
 		}
-		h, err := s.client.UploadFile(torrentData, name, s.cfg.FolderID)
+		h, err := s.client.UploadFile(ctx, torrentData, name, s.cfg.FolderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload torrent: %w", err)
 		}
@@ -96,7 +98,7 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		}
 
 		// Add magnet link to Put.io
-		h, err := s.client.AddTransfer(name, s.cfg.FolderID)
+		h, err := s.client.AddTransfer(ctx, name, s.cfg.FolderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add transfer: %w", err)
 		}
@@ -113,7 +115,7 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 
 	// Store category mapping if we have both a hash and a category
 	if hash != "" && category != "" {
-		s.dlManager.SetCategory(hash, category)
+		s.dlService.SetCategory(hash, category)
 		log.Info("rpc").
 			Str("operation", "torrent-add").
 			Str("hash", hash).
@@ -128,7 +130,7 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 }
 
 // handleTorrentGet processes torrent-get requests
-func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
+func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (interface{}, error) {
 	var params struct {
 		IDs    []string `json:"ids"`
 		Fields []string `json:"fields"`
@@ -145,26 +147,12 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		Interface("fields", params.Fields).
 		Msg("Processing torrent-get request")
 
-	// Get transfers from the processor, which now keeps track of all transfers
-	// including completed ones that have been processed
-	processor := s.dlManager.GetTransferProcessor()
-
-	// Check if processor is nil
-	if processor == nil {
-		log.Error("rpc").
-			Str("operation", "torrent-get").
-			Msg("Transfer processor is nil")
+	transfers := s.dlService.GetTransfers()
+	if transfers == nil {
 		return map[string]interface{}{
 			"torrents": []map[string]interface{}{},
 		}, nil
 	}
-
-	// Log processor details
-	log.Debug("rpc").
-		Str("operation", "torrent-get").
-		Msg("Using transfer processor")
-
-	transfers := processor.GetTransfers()
 
 	log.Debug("rpc").
 		Str("operation", "torrent-get").
@@ -188,122 +176,44 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			}
 		}
 
+		// Look up transfer context if available
+		var transferCtx *download.TransferContext
+		if ctx, exists := s.dlService.GetTransferContext(t.ID); exists {
+			transferCtx = ctx
+		}
+
 		// Calculate combined progress
-		var percentDone float64
-		var status int
-		var leftUntilDone int64
+		prog := calculateProgress(progressInput{
+			PutioPercentDone: t.PercentDone,
+			PutioStatus:      t.Status,
+			PutioSize:        t.Size,
+			TransferCtx:      transferCtx,
+		})
+
+		percentDone := prog.PercentDone
+		status := prog.Status
+		leftUntilDone := prog.LeftUntilDone
 		eta := t.EstimatedTime
 		rateDownload := t.DownloadSpeed
 
-		// Check if we have a transfer context (transfer is being processed)
-		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
-			// Get the context data
-			totalSize := ctx.TotalSize
-			downloadedSize := ctx.DownloadedSize
-			totalFiles := ctx.TotalFiles
-			completedFiles := ctx.CompletedFiles
-			state := ctx.State
-
-			// Calculate total size (Put.io download + local download)
-			// If we have size information, use it; otherwise fall back to the transfer size
-			totalTransferSize := totalSize
-			if totalTransferSize == 0 {
-				totalTransferSize = int64(t.Size)
+		// Override ETA and rate with local values when available
+		if !prog.LocalETA.IsZero() {
+			if secsUntil := int64(time.Until(prog.LocalETA).Seconds()); secsUntil > 0 {
+				eta = secsUntil
 			}
-
-			// The total download task is considered as two parts:
-			// 1. Put.io downloading the torrent (50% of the total task)
-			// 2. Local downloading from Put.io (50% of the total task)
-
-			// Calculate Put.io progress (0-50%)
-			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
-
-			// Calculate local download progress (0-50%)
-			var localProgress float64
-			if totalSize > 0 {
-				// If we have size information, use bytes downloaded
-				localProgress = float64(downloadedSize) / float64(totalSize) * 0.5 // Maps 0-1 to 0-0.5
-			} else if totalFiles > 0 {
-				// Fall back to file count if size information is not available
-				localProgress = float64(completedFiles) / float64(totalFiles) * 0.5 // Maps 0-1 to 0-0.5
+			if prog.LocalSpeed > 0 {
+				rateDownload = int(prog.LocalSpeed)
 			}
-
-			// Combine the two progress values
-			percentDone = putioProgress + localProgress
-
-			// Calculate bytes left until done
-			// First, calculate how many bytes are left on Put.io side
-			putioLeftBytes := int64(float64(t.Size) * (1.0 - float64(t.PercentDone)/100.0))
-
-			// Then, calculate how many bytes are left on local download side
-			localLeftBytes := totalSize - downloadedSize
-
-			// Total bytes left is the sum of both
-			leftUntilDone = putioLeftBytes + localLeftBytes
-
-			// Ensure leftUntilDone is never negative
-			if leftUntilDone < 0 {
-				leftUntilDone = 0
-			}
-
-			// Check if the transfer is in the Processed state
-			if state == 5 { // TransferLifecycleProcessed = 5
-				// For transfers that have been processed locally, show as 100% complete
-				percentDone = 1.0 // 100%
-				leftUntilDone = 0 // Nothing left to download
-				status = 6        // TR_STATUS_SEED (completed/seeding)
-			} else if state == 2 { // TransferLifecycleCompleted = 2
-				status = s.mapPutioStatus(t.Status)
-			} else {
-				// If not all files are downloaded, show as downloading
-				status = 4 // TR_STATUS_DOWNLOAD
-			}
-
-			log.Debug("rpc").
-				Str("operation", "torrent-get").
-				Int64("id", t.ID).
-				Str("name", t.Name).
-				Float64("putio_progress", putioProgress*100).
-				Float64("local_progress", localProgress*100).
-				Float64("combined_progress", percentDone*100).
-				Int64("left_until_done", leftUntilDone).
-				Msg("Calculated progress for transfer with context")
-
-			// Use local ETA and speed during the local download phase
-			// (Put.io values are zero once their download is complete)
-			if !ctx.LocalETA.IsZero() {
-				if secsUntil := int64(time.Until(ctx.LocalETA).Seconds()); secsUntil > 0 {
-					eta = secsUntil
-				}
-				if ctx.LocalSpeed > 0 {
-					rateDownload = int(ctx.LocalSpeed)
-				}
-			}
-		} else if t.Status == "COMPLETED" || t.Status == "SEEDING" {
-			// For transfers that are completed on put.io but have no corresponding entry in the processor
-			// (i.e., already downloaded), show as 100% complete with status "downloaded"
-			percentDone = 1.0 // 100%
-			leftUntilDone = 0 // Nothing left to download
-			status = 6        // TR_STATUS_SEED (completed/seeding)
-		} else {
-			// For other transfers not being processed, just use put.io progress (0-50%)
-			putioProgress := float64(t.PercentDone) / 200.0 // Maps 0-100 to 0-0.5
-			percentDone = putioProgress
-
-			// Calculate bytes left on Put.io side only
-			leftUntilDone = int64(float64(t.Size) * (1.0 - float64(t.PercentDone)/100.0))
-
-			status = s.mapPutioStatus(t.Status)
-
-			log.Debug("rpc").
-				Str("operation", "torrent-get").
-				Int64("id", t.ID).
-				Str("name", t.Name).
-				Float64("putio_progress", putioProgress*100).
-				Float64("combined_progress", percentDone*100).
-				Int64("left_until_done", leftUntilDone).
-				Msg("Calculated progress for transfer without context")
 		}
+
+		log.Debug("rpc").
+			Str("operation", "torrent-get").
+			Int64("id", t.ID).
+			Str("name", t.Name).
+			Float64("percent_done", percentDone*100).
+			Int64("left_until_done", leftUntilDone).
+			Int("status", status).
+			Msg("Calculated progress")
 
 		torrentInfo := map[string]interface{}{
 			"id":             t.ID,
@@ -311,7 +221,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"name":           t.Name,
 			"eta":            eta,
 			"status":         status,
-			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.dlManager.GetCategory(t.Hash)),
+			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.dlService.GetCategory(t.Hash)),
 			"totalSize":      t.Size,
 			"leftUntilDone":  leftUntilDone,
 			"uploadedEver":   t.Uploaded,
@@ -364,7 +274,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 }
 
 // handleTorrentRemove processes torrent-remove requests
-func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) {
+func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) (interface{}, error) {
 	var params struct {
 		IDs             []string `json:"ids"`
 		DeleteLocalData bool     `json:"delete-local-data"`
@@ -375,7 +285,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 	}
 
 	for _, hash := range params.IDs {
-		transfer, err := s.findTransferByHash(hash)
+		transfer, err := s.findTransferByHash(ctx, hash)
 		if err != nil {
 			log.Error("rpc").
 				Str("operation", "torrent-remove").
@@ -394,7 +304,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 				Str("hash", hash).
 				Int64("transfer_id", transfer.ID).
 				Msg("Skipping file deletion: transfer has no associated file")
-		} else if err := s.client.DeleteFile(transfer.FileID); err != nil {
+		} else if err := s.client.DeleteFile(ctx, transfer.FileID); err != nil {
 			log.Error("rpc").
 				Str("operation", "torrent-remove").
 				Str("hash", hash).
@@ -403,7 +313,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 				Msg("Failed to delete transfer files")
 		}
 
-		if err := s.client.DeleteTransfer(transfer.ID); err != nil {
+		if err := s.client.DeleteTransfer(ctx, transfer.ID); err != nil {
 			log.Error("rpc").
 				Str("operation", "torrent-remove").
 				Str("hash", hash).
@@ -421,7 +331,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 
 		// Delete local files if requested (closes #23)
 		if params.DeleteLocalData {
-			category := s.dlManager.GetCategory(hash)
+			category := s.dlService.GetCategory(hash)
 			localTargetDir := filepath.Join(s.cfg.TargetDir, category)
 			if err := deleteLocalData(localTargetDir, transfer.Name); err != nil {
 				log.Error("rpc").
@@ -440,7 +350,7 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 		}
 
 		// Clean up category mapping
-		s.dlManager.RemoveCategory(hash)
+		s.dlService.RemoveCategory(hash)
 	}
 
 	return struct{}{}, nil
