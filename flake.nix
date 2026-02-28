@@ -166,7 +166,7 @@
         makePlundrio = crossPkgs: crossPkgs.buildGoModule rec {
           inherit pname version;
           src = ./.;
-          vendorHash = "sha256-tUvjxuUk79iQokx9SoifLI/8t8Au3r3ipgqAJ2JwBS8=";
+          vendorHash = "sha256-uR2+cHqrzC5SLy+QcQMw8YvnMM3dLnQrf6Jnm1bYenw=";
           proxyVendor = true;
           subPackages = [ "cmd/${pname}" ];
 
