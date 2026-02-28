@@ -53,7 +53,7 @@ func TestDeleteLocalData(t *testing.T) {
 		{
 			name:         "absolute path in transfer name is safe",
 			transferName: "/tmp/evil",
-			setup:        func(t *testing.T, targetDir string) {
+			setup: func(t *testing.T, targetDir string) {
 				// filepath.Join strips leading / so this resolves inside targetDir
 			},
 			wantDeleted: false,
