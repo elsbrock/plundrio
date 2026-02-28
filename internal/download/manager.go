@@ -18,6 +18,7 @@ type Manager struct {
 	dlConfig *DownloadConfig // Download-specific configuration
 
 	coordinator *TransferCoordinator // Coordinates transfer lifecycle
+	categories  *CategoryStore       // Maps transfer hash → category subfolder
 	activeFiles sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
 
 	stopChan chan struct{}
@@ -43,6 +44,21 @@ func (m *Manager) GetCoordinator() *TransferCoordinator {
 	return m.coordinator
 }
 
+// SetCategory stores a category for a transfer hash.
+func (m *Manager) SetCategory(hash, category string) {
+	m.categories.Set(hash, category)
+}
+
+// GetCategory returns the category for a transfer hash, or "" if none.
+func (m *Manager) GetCategory(hash string) string {
+	return m.categories.Get(hash)
+}
+
+// RemoveCategory deletes the stored category for a transfer hash.
+func (m *Manager) RemoveCategory(hash string) {
+	m.categories.Remove(hash)
+}
+
 // New creates a new download manager
 func New(cfg *config.Config, client *api.Client) *Manager {
 	// Get default download configuration
@@ -58,6 +74,7 @@ func New(cfg *config.Config, client *api.Client) *Manager {
 		cfg:         cfg,
 		client:      client,
 		dlConfig:    dlConfig,
+		categories:  newCategoryStore(cfg.TargetDir),
 		stopChan:    make(chan struct{}),
 		jobs:        make(chan downloadJob, workerCount*dlConfig.BufferMultiple),
 		activeFiles: sync.Map{},
@@ -105,6 +122,8 @@ func (m *Manager) Start() {
 	}
 	m.running = true
 	m.mu.Unlock()
+
+	m.categories.Load()
 
 	workerCount := m.cfg.WorkerCount
 	if workerCount <= 0 {

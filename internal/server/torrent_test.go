@@ -106,6 +106,67 @@ func TestDeleteLocalData(t *testing.T) {
 	}
 }
 
+func TestExtractCategory(t *testing.T) {
+	tests := []struct {
+		name        string
+		targetDir   string
+		downloadDir string
+		want        string
+	}{
+		{
+			name:        "with category",
+			targetDir:   "/downloads",
+			downloadDir: "/downloads/tv",
+			want:        "tv",
+		},
+		{
+			name:        "empty downloadDir",
+			targetDir:   "/downloads",
+			downloadDir: "",
+			want:        "",
+		},
+		{
+			name:        "same as targetDir",
+			targetDir:   "/downloads",
+			downloadDir: "/downloads",
+			want:        "",
+		},
+		{
+			name:        "nested category",
+			targetDir:   "/downloads",
+			downloadDir: "/downloads/media/tv",
+			want:        "media/tv",
+		},
+		{
+			name:        "trailing slash on downloadDir",
+			targetDir:   "/downloads",
+			downloadDir: "/downloads/tv/",
+			want:        "tv",
+		},
+		{
+			name:        "trailing slash on targetDir",
+			targetDir:   "/downloads/",
+			downloadDir: "/downloads/tv",
+			want:        "tv",
+		},
+		{
+			name:        "both trailing slashes",
+			targetDir:   "/downloads/",
+			downloadDir: "/downloads/tv/",
+			want:        "tv",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractCategory(tt.targetDir, tt.downloadDir)
+			if got != tt.want {
+				t.Errorf("extractCategory(%q, %q) = %q, want %q", tt.targetDir, tt.downloadDir, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeleteLocalDataDoesNotAffectSiblings(t *testing.T) {
 	targetDir := t.TempDir()
 

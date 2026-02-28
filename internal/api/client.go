@@ -75,18 +75,18 @@ func (c *Client) EnsureFolder(name string) (int64, error) {
 	return folder.ID, nil
 }
 
-// AddTransfer adds a new transfer (torrent) to Put.io
-func (c *Client) AddTransfer(magnetLink string, folderID int64) error {
+// AddTransfer adds a new transfer (torrent) to Put.io and returns its hash.
+func (c *Client) AddTransfer(magnetLink string, folderID int64) (string, error) {
 	transfer, err := c.client.Transfers.Add(c.ctx, magnetLink, folderID, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if transfer.Status == "ERROR" {
-		return fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
+		return "", fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
 	}
 
-	return nil
+	return transfer.Hash, nil
 }
 
 // GetTransfers returns the list of current transfers
@@ -146,14 +146,18 @@ func (c *Client) DeleteFile(fileID int64) error {
 	return nil
 }
 
-// UploadFile uploads a torrent file to Put.io
-func (c *Client) UploadFile(data []byte, filename string, folderID int64) error {
+// UploadFile uploads a torrent file to Put.io and returns the transfer hash
+// if one was created.
+func (c *Client) UploadFile(data []byte, filename string, folderID int64) (string, error) {
 	reader := bytes.NewReader(data)
-	_, err := c.client.Files.Upload(c.ctx, reader, filename, folderID)
+	upload, err := c.client.Files.Upload(c.ctx, reader, filename, folderID)
 	if err != nil {
-		return fmt.Errorf("failed to upload file: %w", err)
+		return "", fmt.Errorf("failed to upload file: %w", err)
 	}
-	return nil
+	if upload.Transfer != nil {
+		return upload.Transfer.Hash, nil
+	}
+	return "", nil
 }
 
 // GetAllTransferFiles recursively gets all files in a transfer

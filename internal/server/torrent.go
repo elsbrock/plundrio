@@ -13,6 +13,21 @@ import (
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
+// extractCategory returns the relative category path from downloadDir.
+// For example, if targetDir="/downloads" and downloadDir="/downloads/tv",
+// it returns "tv". Returns "" if downloadDir is empty or equals targetDir.
+func extractCategory(targetDir, downloadDir string) string {
+	if downloadDir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(targetDir, downloadDir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	// Clean up any trailing slashes or path oddities
+	return filepath.Clean(rel)
+}
+
 // findTransferByHash finds a transfer by its hash string
 func (s *Server) findTransferByHash(hash string) (*putio.Transfer, error) {
 	transfers, err := s.client.GetTransfers()
@@ -33,13 +48,16 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		Filename    string `json:"filename"`    // For .torrent files
 		MetaInfo    string `json:"metainfo"`    // Base64 encoded .torrent
 		MagnetLink  string `json:"magnetLink"`  // Magnet link
-		DownloadDir string `json:"downloadDir"` // Ignored, we use Put.io
+		DownloadDir string `json:"downloadDir"` // Category subfolder (e.g. /downloads/tv)
 	}
 
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
+
+	category := extractCategory(s.cfg.TargetDir, params.DownloadDir)
 	var name string
+	var hash string
 
 	// Handle .torrent file upload if metainfo is provided
 	if params.MetaInfo != "" {
@@ -54,14 +72,17 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		if name == "" {
 			name = "unknown.torrent"
 		}
-		if err := s.client.UploadFile(torrentData, name, s.cfg.FolderID); err != nil {
+		h, err := s.client.UploadFile(torrentData, name, s.cfg.FolderID)
+		if err != nil {
 			return nil, fmt.Errorf("failed to upload torrent: %w", err)
 		}
+		hash = h
 
 		log.Info("rpc").
 			Str("operation", "torrent-add").
 			Str("type", "torrent").
 			Str("name", name).
+			Str("category", category).
 			Int64("folder_id", s.cfg.FolderID).
 			Msg("Torrent file uploaded")
 	} else {
@@ -75,21 +96,29 @@ func (s *Server) handleTorrentAdd(args json.RawMessage) (interface{}, error) {
 		}
 
 		// Add magnet link to Put.io
-		if err := s.client.AddTransfer(name, s.cfg.FolderID); err != nil {
+		h, err := s.client.AddTransfer(name, s.cfg.FolderID)
+		if err != nil {
 			return nil, fmt.Errorf("failed to add transfer: %w", err)
 		}
+		hash = h
 
 		log.Info("rpc").
 			Str("operation", "torrent-add").
 			Str("type", "magnet").
 			Str("magnet", name).
+			Str("category", category).
 			Int64("folder_id", s.cfg.FolderID).
 			Msg("Magnet link added")
+	}
 
-		// Return success response
-		return map[string]interface{}{
-			"torrent-added": map[string]interface{}{},
-		}, nil
+	// Store category mapping if we have both a hash and a category
+	if hash != "" && category != "" {
+		s.dlManager.SetCategory(hash, category)
+		log.Info("rpc").
+			Str("operation", "torrent-add").
+			Str("hash", hash).
+			Str("category", category).
+			Msg("Stored category for transfer")
 	}
 
 	// Return success response
@@ -282,7 +311,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"name":           t.Name,
 			"eta":            eta,
 			"status":         status,
-			"downloadDir":    s.cfg.TargetDir,
+			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.dlManager.GetCategory(t.Hash)),
 			"totalSize":      t.Size,
 			"leftUntilDone":  leftUntilDone,
 			"uploadedEver":   t.Uploaded,
@@ -392,19 +421,26 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 
 		// Delete local files if requested (closes #23)
 		if params.DeleteLocalData {
-			if err := deleteLocalData(s.cfg.TargetDir, transfer.Name); err != nil {
+			category := s.dlManager.GetCategory(hash)
+			localTargetDir := filepath.Join(s.cfg.TargetDir, category)
+			if err := deleteLocalData(localTargetDir, transfer.Name); err != nil {
 				log.Error("rpc").
 					Str("operation", "torrent-remove").
 					Str("transfer_name", transfer.Name).
+					Str("category", category).
 					Err(err).
 					Msg("Failed to delete local files")
 			} else {
 				log.Info("rpc").
 					Str("operation", "torrent-remove").
 					Str("transfer_name", transfer.Name).
+					Str("category", category).
 					Msg("Deleted local files")
 			}
 		}
+
+		// Clean up category mapping
+		s.dlManager.RemoveCategory(hash)
 	}
 
 	return struct{}{}, nil

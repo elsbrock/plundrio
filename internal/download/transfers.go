@@ -421,7 +421,8 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 
 // shouldDownloadFile determines if a file needs to be downloaded
 func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *putio.File) bool {
-	targetPath := filepath.Join(p.targetDir, transfer.Name, file.Name)
+	category := p.manager.GetCategory(transfer.Hash)
+	targetPath := filepath.Join(p.targetDir, category, transfer.Name, file.Name)
 	info, err := os.Stat(targetPath)
 
 	// Skip if file exists with correct size
@@ -447,9 +448,10 @@ func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *p
 
 // queueFileDownload adds a file to the download queue
 func (p *TransferProcessor) queueFileDownload(transfer *putio.Transfer, file *putio.File) {
+	category := p.manager.GetCategory(transfer.Hash)
 	p.manager.QueueDownload(downloadJob{
 		FileID:     file.ID,
-		Name:       filepath.Join(transfer.Name, file.Name),
+		Name:       filepath.Join(category, transfer.Name, file.Name),
 		TransferID: transfer.ID,
 	})
 	log.Debug("transfers").
