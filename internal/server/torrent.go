@@ -354,8 +354,16 @@ func (s *Server) handleTorrentRemove(args json.RawMessage) (interface{}, error) 
 			continue
 		}
 
-		// Delete the files of the transfer
-		if err := s.client.DeleteFile(transfer.FileID); err != nil {
+		// Seeding-only transfers (where the file was already deleted) have no
+		// file_id. Calling DeleteFile(0) would target the root folder and
+		// cascade-delete everything in the account.
+		if transfer.FileID == 0 {
+			log.Warn("rpc").
+				Str("operation", "torrent-remove").
+				Str("hash", hash).
+				Int64("transfer_id", transfer.ID).
+				Msg("Skipping file deletion: transfer has no associated file")
+		} else if err := s.client.DeleteFile(transfer.FileID); err != nil {
 			log.Error("rpc").
 				Str("operation", "torrent-remove").
 				Str("hash", hash).
