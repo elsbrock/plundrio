@@ -26,7 +26,16 @@ Create a new release for plundrio. The user may provide context about what chang
 3. For each relevant PR, run `gh pr view <number> --json title,body,author,number` to get details
 4. Ignore version bump commits (`chore: next version`) and CI-only changes unless significant
 
-## Step 3: Bump version (if needed)
+## Step 3: Update flake inputs
+
+The CI uses `DeterminateSystems/flake-checker-action` with `fail-mode: true` and a 30-day max age on nixpkgs. Stale inputs will fail the release workflow.
+
+1. Run `nix flake update` to update all flake inputs
+2. Run `nix develop --command gomod2nix generate` to regenerate `gomod2nix.toml` in case Go dependencies changed
+3. Run `nix build .#plundrio` to verify the build still works
+4. If inputs changed, stage and commit: `git add flake.lock gomod2nix.toml && git commit -m "chore: update flake inputs"`
+
+## Step 4: Bump version (if needed)
 
 Skip this step if `flake.nix` already has a version newer than the latest git tag.
 
@@ -35,11 +44,11 @@ Skip this step if `flake.nix` already has a version newer than the latest git ta
 3. Edit flake.nix with the new version
 4. Stage and commit: `git add flake.nix && git commit -m "chore: next version is vX.Y.Z"`
 
-## Step 4: Push
+## Step 5: Push
 
 1. **IMPORTANT: Push to remote!** `git push origin main` (pull --rebase first if rejected)
 
-## Step 5: Create or update draft release
+## Step 6: Create or update draft release
 
 If a draft/pre-release already exists for this version (from step 1), use `gh release edit`. Otherwise use `gh release create --draft`.
 
@@ -74,7 +83,7 @@ Categorize changes into sections as appropriate:
 
 Only include sections that have entries. Only include "New Contributors" if there are first-time contributors. Check with `gh api repos/elsbrock/plundrio/contributors` if unsure.
 
-## Step 6: Report back
+## Step 7: Report back
 
 Print the release URL and a summary of what's included.
 

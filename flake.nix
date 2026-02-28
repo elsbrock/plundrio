@@ -3,8 +3,12 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    gomod2nix = {
+      url = "github:nix-community/gomod2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, gomod2nix }:
     let
       pname = "plundrio";
       version = "0.10.6";
@@ -160,14 +164,15 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [ gomod2nix.overlays.default ];
         };
 
         # Create a package for the specified system/platform
-        makePlundrio = crossPkgs: crossPkgs.buildGoModule rec {
+        makePlundrio = crossPkgs: crossPkgs.buildGoApplication rec {
           inherit pname version;
           src = ./.;
-          vendorHash = "sha256-uR2+cHqrzC5SLy+QcQMw8YvnMM3dLnQrf6Jnm1bYenw=";
-          proxyVendor = true;
+          modules = ./gomod2nix.toml;
+          pwd = ./.;
           subPackages = [ "cmd/${pname}" ];
 
           # Modified ldflags to work with pure Go builds
@@ -221,10 +226,11 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_21
+            go
             gopls
             go-tools
             golangci-lint
+            gomod2nix.packages.${system}.default
           ];
           shellHook = ''
             echo "plundrio development shell"
