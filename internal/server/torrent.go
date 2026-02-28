@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/log"
@@ -160,6 +161,8 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 		var percentDone float64
 		var status int
 		var leftUntilDone int64
+		eta := t.EstimatedTime
+		rateDownload := t.DownloadSpeed
 
 		// Check if we have a transfer context (transfer is being processed)
 		if ctx, exists := s.dlManager.GetCoordinator().GetTransferContext(t.ID); exists && ctx.TotalFiles > 0 {
@@ -234,6 +237,17 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 				Float64("combined_progress", percentDone*100).
 				Int64("left_until_done", leftUntilDone).
 				Msg("Calculated progress for transfer with context")
+
+			// Use local ETA and speed during the local download phase
+			// (Put.io values are zero once their download is complete)
+			if !ctx.LocalETA.IsZero() {
+				if secsUntil := int64(time.Until(ctx.LocalETA).Seconds()); secsUntil > 0 {
+					eta = secsUntil
+				}
+				if ctx.LocalSpeed > 0 {
+					rateDownload = int(ctx.LocalSpeed)
+				}
+			}
 		} else if t.Status == "COMPLETED" || t.Status == "SEEDING" {
 			// For transfers that are completed on put.io but have no corresponding entry in the processor
 			// (i.e., already downloaded), show as 100% complete with status "downloaded"
@@ -264,7 +278,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"id":             t.ID,
 			"hashString":     t.Hash,
 			"name":           t.Name,
-			"eta":            t.EstimatedTime,
+			"eta":            eta,
 			"status":         status,
 			"downloadDir":    s.cfg.TargetDir,
 			"totalSize":      t.Size,
@@ -272,7 +286,7 @@ func (s *Server) handleTorrentGet(args json.RawMessage) (interface{}, error) {
 			"uploadedEver":   t.Uploaded,
 			"downloadedEver": t.Downloaded,
 			"percentDone":    percentDone,
-			"rateDownload":   t.DownloadSpeed,
+			"rateDownload":   rateDownload,
 			"rateUpload":     t.UploadSpeed,
 			"uploadRatio": func() float64 {
 				if t.Size > 0 {
