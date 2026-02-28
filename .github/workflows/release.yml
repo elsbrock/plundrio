@@ -89,7 +89,7 @@ jobs:
       - name: Tag and Push Docker Image
         id: tag_push_image
         env:
-          ARCH: ${{ matrix.arch }}
+          ARCH: ${{ matrix.docker_arch_suffix }}
         run: |
           IMAGE_ID=$(docker images --filter "dangling=false" --format "{{.ID}}" | head -n 1)
           echo "Loaded Image ID: $IMAGE_ID"
@@ -149,31 +149,26 @@ jobs:
 
           # Build the annotation arguments using a bash array for safety
           ANNOTATION_ARGS=()
-          echo "${{ steps.meta.outputs.annotations }}" | while IFS= read -r ANN; do
-            if [ -z "$ANN" ]; then continue; fi # Skip empty lines
-            # Add --annotation flag and the annotation itself (with manifest: prefix removed) as separate array elements
+          while IFS= read -r ANN; do
+            [ -z "$ANN" ] && continue
             ANNOTATION_ARGS+=(--annotation "${ANN#manifest:}")
-          done
+          done <<< "${{ steps.meta.outputs.annotations }}"
           echo "Annotation arguments array count: ${#ANNOTATION_ARGS[@]}"
 
-          # Process unique tags using a while read loop
-          echo "${{ steps.meta.outputs.tags }}" | sort -u | while IFS= read -r FINAL_TAG; do
-            if [ -z "$FINAL_TAG" ]; then continue; fi # Skip empty lines
+          # Process unique tags
+          while IFS= read -r FINAL_TAG; do
+            [ -z "$FINAL_TAG" ] && continue
 
             echo "Processing manifest for $FINAL_TAG"
-            # Create the manifest list referencing the arch-specific images
             docker manifest create "$FINAL_TAG" \
               "${FINAL_TAG}-amd64" \
               "${FINAL_TAG}-arm64"
 
-            # Annotate the manifest list if annotations exist
             if [ ${#ANNOTATION_ARGS[@]} -gt 0 ]; then
               echo "Annotating $FINAL_TAG"
-              # Pass the array elements correctly expanded as arguments
               docker manifest annotate "$FINAL_TAG" "${ANNOTATION_ARGS[@]}"
             fi
 
-            # Push the final manifest list
             echo "Pushing manifest $FINAL_TAG"
             docker manifest push "$FINAL_TAG"
-          done
+          done <<< "$(echo "${{ steps.meta.outputs.tags }}" | sort -u)"
