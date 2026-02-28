@@ -3,9 +3,24 @@ name: "Build"
 on:
   pull_request:
   push:
+    branches: [main]
 
 jobs:
-  build:
+  # Fast Go build + test on all PRs (works even when gomod2nix.toml is stale)
+  go:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test ./...
+
+  # Full Nix build on pushes to main (gomod2nix.toml is kept in sync at release time)
+  nix:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       matrix:
