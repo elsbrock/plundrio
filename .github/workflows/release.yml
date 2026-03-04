@@ -40,30 +40,24 @@ jobs:
           asset_content_type: application/octet-stream
 
   docker:
-    name: Build Docker Image (${{ matrix.arch }})
+    name: Push Docker Image (${{ matrix.docker_arch_suffix }})
     needs: [binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            nix_package: plundrio-docker
-            docker_platform: linux/amd64
+          - nix_package: plundrio-docker
             docker_arch_suffix: amd64
-          - arch: aarch64
-            nix_package: plundrio-docker-aarch64
-            docker_platform: linux/arm64
+          - nix_package: plundrio-docker-aarch64
             docker_arch_suffix: arm64
-    outputs:
-      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: DeterminateSystems/flake-checker-action@main
         with:
           fail-mode: true
@@ -71,39 +65,16 @@ jobs:
       - name: Build Docker image with Nix
         run: nix build .#${{ matrix.nix_package }}
 
-      - name: Load Docker image
-        run: docker load < result
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-
-      - name: Log in to GHCR
-        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      - name: Tag and Push Docker Image
-        id: tag_push_image
+      - name: Push image with skopeo
         env:
           ARCH: ${{ matrix.docker_arch_suffix }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          IMAGE_ID=$(docker images --filter "dangling=false" --format "{{.ID}}" | head -n 1)
-          echo "Loaded Image ID: $IMAGE_ID"
-
-          echo "Generated base tags:"
-          echo "${{ steps.meta.outputs.tags }}"
-
-          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r BASE_TAG; do
-            if [ -z "$BASE_TAG" ]; then continue; fi # Skip empty lines if any
-            ARCH_TAG="${BASE_TAG}-${ARCH}" # Use env var ARCH here
-            echo "Tagging $IMAGE_ID as $ARCH_TAG"
-            docker tag "$IMAGE_ID" "$ARCH_TAG"
-            echo "Pushing $ARCH_TAG"
-            docker push "$ARCH_TAG"
+          skopeo login ghcr.io -u ${{ github.actor }} --password "${{ secrets.GITHUB_TOKEN }}"
+          for TAG in "${IMAGE}:${VERSION}-${ARCH}" "${IMAGE}:latest-${ARCH}"; do
+            echo "Pushing $TAG"
+            skopeo copy "docker-archive:$(readlink -f result)" "docker://${TAG}"
           done
 
   create_manifest:
