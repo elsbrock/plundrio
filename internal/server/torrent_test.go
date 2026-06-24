@@ -52,6 +52,10 @@ func (c *torrentAddClient) AddTransfer(
 	return c.addTransfer, nil
 }
 
+func (c *torrentAddClient) EnsureFolderInParent(_ context.Context, _ string, parentID int64) (int64, error) {
+	return parentID, nil
+}
+
 func (c *torrentAddClient) DeleteFile(context.Context, int64) error {
 	return nil
 }
@@ -61,7 +65,7 @@ func (c *torrentAddClient) DeleteTransfer(context.Context, int64) error {
 }
 
 type torrentAddDownloadService struct {
-	categories map[string]string
+	categories map[int64]string
 }
 
 func (s *torrentAddDownloadService) GetTransfers() []*putio.Transfer {
@@ -72,19 +76,19 @@ func (s *torrentAddDownloadService) GetTransferContext(int64) (*download.Transfe
 	return nil, false
 }
 
-func (s *torrentAddDownloadService) SetCategory(hash, category string) {
+func (s *torrentAddDownloadService) SetCategory(transferID int64, category string) {
 	if s.categories == nil {
-		s.categories = make(map[string]string)
+		s.categories = make(map[int64]string)
 	}
-	s.categories[hash] = category
+	s.categories[transferID] = category
 }
 
-func (s *torrentAddDownloadService) GetCategory(hash string) string {
-	return s.categories[hash]
+func (s *torrentAddDownloadService) GetCategory(transferID int64) string {
+	return s.categories[transferID]
 }
 
-func (s *torrentAddDownloadService) RemoveCategory(hash string) {
-	delete(s.categories, hash)
+func (s *torrentAddDownloadService) RemoveCategory(transferID int64) {
+	delete(s.categories, transferID)
 }
 
 func (s *torrentAddDownloadService) Stop() {}
@@ -95,14 +99,14 @@ func TestHandleTorrentAddReturnsMagnetTrackingFields(t *testing.T) {
 	}
 	service := &torrentAddDownloadService{}
 	server := &Server{
-		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads", UseCategoriesTarget: true},
 		client:    client,
 		dlService: service,
 	}
 	magnet := "magnet:?xt=urn:btih:ABC123"
 	args, err := json.Marshal(map[string]string{
-		"magnetLink":  magnet,
-		"downloadDir": "/downloads/tv",
+		"magnetLink":   magnet,
+		"download-dir": "/downloads/tv",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +121,7 @@ func TestHandleTorrentAddReturnsMagnetTrackingFields(t *testing.T) {
 	if client.addMagnet != magnet || client.folderID != 42 {
 		t.Fatalf("AddTransfer called with magnet %q and folder %d", client.addMagnet, client.folderID)
 	}
-	if got := service.categories["ABC123"]; got != "tv" {
+	if got := service.categories[7]; got != "tv" {
 		t.Fatalf("stored category = %q, want tv", got)
 	}
 }
@@ -159,19 +163,22 @@ func TestHandleTorrentAddReturnsMetainfoTrackingFields(t *testing.T) {
 	}
 }
 
-func TestHandleTorrentAddAllowsEmptyHashWithoutCategory(t *testing.T) {
+// A magnet whose info-hash put.io has not resolved yet must still succeed, and
+// its category must still be recorded: categories are keyed by transfer ID,
+// which put.io always populates, rather than by the hash.
+func TestHandleTorrentAddAllowsEmptyHash(t *testing.T) {
 	client := &torrentAddClient{
 		addTransfer: &putio.Transfer{ID: 7, Name: "Example Show"},
 	}
 	service := &torrentAddDownloadService{}
 	server := &Server{
-		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads", UseCategoriesTarget: true},
 		client:    client,
 		dlService: service,
 	}
 	args, err := json.Marshal(map[string]string{
-		"magnetLink":  "magnet:?xt=urn:btih:ABC123",
-		"downloadDir": "/downloads/tv",
+		"magnetLink":   "magnet:?xt=urn:btih:ABC123",
+		"download-dir": "/downloads/tv",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,8 +190,8 @@ func TestHandleTorrentAddAllowsEmptyHashWithoutCategory(t *testing.T) {
 	}
 
 	assertTorrentAddedResponse(t, response, 7, "", "Example Show")
-	if len(service.categories) != 0 {
-		t.Fatalf("stored categories = %#v, want none", service.categories)
+	if got := service.categories[7]; got != "tv" {
+		t.Fatalf("stored category = %q, want tv", got)
 	}
 }
 
@@ -370,6 +377,24 @@ func TestExtractCategory(t *testing.T) {
 			targetDir:   "/downloads",
 			downloadDir: "/downloads/media/tv",
 			want:        "media/tv",
+		},
+		{
+			name:        "escaping downloadDir is rejected",
+			targetDir:   "/downloads",
+			downloadDir: "/etc",
+			want:        "",
+		},
+		{
+			name:        "parent of targetDir is rejected",
+			targetDir:   "/downloads/complete",
+			downloadDir: "/downloads",
+			want:        "",
+		},
+		{
+			name:        "sibling escaping targetDir is rejected",
+			targetDir:   "/downloads",
+			downloadDir: "/downloads2/tv",
+			want:        "",
 		},
 		{
 			name:        "trailing slash on downloadDir",

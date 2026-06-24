@@ -11,7 +11,7 @@
   outputs = { self, nixpkgs, flake-utils, gomod2nix }:
     let
       pname = "plundrio";
-      version = "0.10.6";
+      version = "0.11.0";
       description = "A Put.io integration for *arr applications";
       maintainer = {
         name = "Simon Elsbrock";

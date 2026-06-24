@@ -11,17 +11,20 @@ import (
 
 const stateFileName = ".plundrio-state.json"
 
-// CategoryStore persists a hash → category mapping so that downloads land in
-// the correct sub-directory (e.g. "tv", "movies") even across restarts.
+// CategoryStore persists a put.io transfer ID → category mapping so that
+// downloads land in the correct sub-directory (e.g. "tv", "movies") even across
+// restarts. The transfer ID is used as the key (rather than the torrent hash)
+// because it is assigned by put.io immediately when a transfer is added, while
+// the hash may still be empty for freshly-added magnet links.
 type CategoryStore struct {
 	mu        sync.RWMutex
-	mapping   map[string]string
+	mapping   map[int64]string
 	stateFile string
 }
 
 func newCategoryStore(targetDir string) *CategoryStore {
 	return &CategoryStore{
-		mapping:   make(map[string]string),
+		mapping:   make(map[int64]string),
 		stateFile: filepath.Join(targetDir, stateFileName),
 	}
 }
@@ -44,30 +47,30 @@ func (cs *CategoryStore) Load() {
 	}
 }
 
-// Set stores a category for the given hash and persists to disk.
-func (cs *CategoryStore) Set(hash, category string) {
-	if hash == "" || category == "" {
+// Set stores a category for the given transfer ID and persists to disk.
+func (cs *CategoryStore) Set(transferID int64, category string) {
+	if transferID == 0 || category == "" {
 		return
 	}
 
 	cs.mu.Lock()
-	cs.mapping[hash] = category
+	cs.mapping[transferID] = category
 	cs.mu.Unlock()
 
 	cs.save()
 }
 
-// Get returns the category for a hash, or "" if none is stored.
-func (cs *CategoryStore) Get(hash string) string {
+// Get returns the category for a transfer ID, or "" if none is stored.
+func (cs *CategoryStore) Get(transferID int64) string {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	return cs.mapping[hash]
+	return cs.mapping[transferID]
 }
 
-// Remove deletes the category for a hash and persists to disk.
-func (cs *CategoryStore) Remove(hash string) {
+// Remove deletes the category for a transfer ID and persists to disk.
+func (cs *CategoryStore) Remove(transferID int64) {
 	cs.mu.Lock()
-	delete(cs.mapping, hash)
+	delete(cs.mapping, transferID)
 	cs.mu.Unlock()
 
 	cs.save()

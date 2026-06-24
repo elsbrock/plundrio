@@ -67,6 +67,10 @@ var runCmd = &cobra.Command{
 		oauthToken := viper.GetString("token")
 		listenAddr := viper.GetString("listen")
 		workerCount := viper.GetInt("workers")
+		// Use the dashed flag names as the lookup keys so that the flag, the
+		// PLDR_USE_CATEGORIES_* env vars, and config-file keys all resolve.
+		useCategoriesTarget := viper.GetBool("use-categories-target")
+		useCategoriesPutio := viper.GetBool("use-categories-putio")
 		downloadStartWindow := config.DownloadStartWindowConfig{
 			Enabled: viper.GetBool("download_start_window.enabled"),
 			Start:   viper.GetString("download_start_window.start"),
@@ -78,6 +82,8 @@ var runCmd = &cobra.Command{
 			Str("putio_folder", putioFolder).
 			Str("listen_addr", listenAddr).
 			Int("workers", workerCount).
+			Bool("use_categories_target", useCategoriesTarget).
+			Bool("use_categories_putio", useCategoriesPutio).
 			Bool("download_start_window_enabled", downloadStartWindow.Enabled).
 			Str("download_start_window_start", downloadStartWindow.Start).
 			Str("download_start_window_end", downloadStartWindow.End).
@@ -116,6 +122,8 @@ var runCmd = &cobra.Command{
 			OAuthToken:          oauthToken,
 			ListenAddr:          listenAddr,
 			WorkerCount:         workerCount,
+			UseCategoriesTarget: useCategoriesTarget,
+			UseCategoriesPutio:  useCategoriesPutio,
 			DownloadStartWindow: downloadStartWindow,
 		}
 
@@ -195,6 +203,8 @@ folder: "plundrio"					# Folder name on Put.io
 token: "" 									# Get a token with get-token
 listen: ":9091"							# Transmission RPC server address
 workers: 4									# Number of download workers
+use-categories-target: false # Put local downloads into per-category subfolders (e.g. <target>/tv)
+use-categories-putio: false  # Create per-category subfolders on Put.io (e.g. <folder>/tv)
 download_start_window:       # Optional local download start window
   enabled: false
   start: "23:00"
@@ -203,6 +213,7 @@ log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,non
 
 # Environment variables:
 # PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS,
+# PLDR_USE_CATEGORIES_TARGET, PLDR_USE_CATEGORIES_PUTIO,
 # PLDR_DOWNLOAD_START_WINDOW_ENABLED, PLDR_DOWNLOAD_START_WINDOW_START,
 # PLDR_DOWNLOAD_START_WINDOW_END, PLDR_LOG_LEVEL
 `
@@ -305,6 +316,8 @@ func init() {
 	runCmd.Flags().StringP("token", "k", "", "Put.io OAuth token (required)")
 	runCmd.Flags().StringP("listen", "l", ":9091", "Listen address")
 	runCmd.Flags().IntP("workers", "w", 4, "Number of workers")
+	runCmd.Flags().Bool("use-categories-target", false, "Place local downloads into per-category subfolders of the target directory (based on the *arr download-dir)")
+	runCmd.Flags().Bool("use-categories-putio", false, "Create per-category subfolders under the Put.io folder and upload transfers into them")
 	runCmd.Flags().String("log-level", "", "Log level (trace,debug,info,warn,error,fatal,none,pretty)")
 
 	rootCmd.AddCommand(runCmd)

@@ -37,7 +37,7 @@ go build ./cmd/plundrio && ./plundrio run --help
 ```
 cmd/plundrio/main.go    Entry point, CLI (cobra + viper), wires everything together
 internal/
-  config/               Config struct (TargetDir, FolderID, OAuthToken, ListenAddr, WorkerCount)
+  config/               Config struct (TargetDir, FolderID, OAuthToken, ListenAddr, WorkerCount, UseCategoriesTarget, UseCategoriesPutio)
   api/                  Put.io API client wrapper (uploads, transfers, files, auth)
   server/               Transmission RPC server (HTTP on :9091)
   download/             Download manager, transfer coordinator, worker pool
@@ -53,6 +53,13 @@ internal/
 5. **Coordination**: `TransferCoordinator` tracks lifecycle states (Initial -> Downloading -> Completed -> Processed), `TransferContext` holds per-transfer state
 6. **Cleanup**: On completion, cleanup hook deletes source file from put.io but keeps transfer record for *arr visibility
 7. **torrent-remove**: *arr app requests removal; plundrio deletes put.io file + transfer
+
+### Category Subfolders
+
+*arr apps send the requested path in the Transmission `torrent-add` argument `download-dir` (kebab-case — note `torrent-get` *responses* use camelCase `downloadDir`). `extractCategory` derives the category as the path of `download-dir` relative to `TargetDir` (e.g. `/downloads/tv` → `tv`). The category is stored in `CategoryStore` keyed by the **put.io transfer ID** (not the hash, which is empty for freshly-added magnets). Two independent opt-in config flags, both default off:
+
+- `UseCategoriesTarget`: local downloads go to `TargetDir/<category>/...` (via `Manager.localCategory`).
+- `UseCategoriesPutio`: transfers are uploaded into a `<folder>/<category>` subfolder on put.io (`Server.putioFolderForCategory`, cached in `Server.catFolders`). The monitor then treats the configured folder *and* its direct subfolders as managed (`TransferProcessor.managedFolders`). Single-level categories only; empty subfolders are left in place.
 
 ### Progress Reporting
 
@@ -76,10 +83,8 @@ Environment prefix: `PLDR_` (e.g., `PLDR_TOKEN`, `PLDR_TARGET`, `PLDR_FOLDER`). 
 
 ## Testing
 
-There are currently no tests in this codebase.
+Run tests with `go test ./...`. Existing coverage: `internal/download` (category store, transfer monitor, errors, window) and `internal/server` (torrent-add category handling, local-data deletion, progress, extract-category).
 
 ## Known Issues
 
-- `handleTorrentRemove` parses `DeleteLocalData` but never deletes local files (#23)
-- `GetTransfers()` filters by `SaveParentID == folderID`, so externally-added transfers are invisible (#17)
-- `DownloadDir` from *arr is parsed but ignored — all files go to flat `TargetDir` (#22)
+- `GetTransfers()` filters transfers by managed folder. With `UseCategoriesPutio` off it accepts only `SaveParentID == folderID`, so externally-added transfers in other folders are invisible (#17). With `UseCategoriesPutio` on it also accepts the folder's direct subfolders (single level only).

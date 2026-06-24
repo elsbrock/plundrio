@@ -238,6 +238,8 @@ folder: "plundrio"             # Folder name on put.io
 token: ""                      # Put.io OAuth token (prefer env var)
 listen: ":9091"                # Transmission RPC server address
 workers: 4                     # Number of download workers
+use-categories-target: false   # Put local downloads into per-category subfolders (e.g. <target>/tv)
+use-categories-putio: false    # Create per-category subfolders on put.io (e.g. <folder>/tv)
 download_start_window:         # Optional local download start window
   enabled: false
   start: "23:00"
@@ -246,6 +248,15 @@ log_level: "info"              # Log level (trace,debug,info,warn,error,fatal,pa
 ```
 
 `download_start_window` only gates when plundrio may begin a new local download. It does not stop Put.io transfers from being created, and it does not interrupt downloads that are already in progress.
+
+#### Category subfolders
+
+By default plundrio places every download directly in the target directory and adds every transfer to the configured put.io folder, ignoring the category your *arr app requests via the Transmission `download-dir` argument (e.g. `/downloads/tv`). Two independent, opt-in flags change this:
+
+- **`use-categories-target`** (`PLDR_USE_CATEGORIES_TARGET`): local downloads are placed into a per-category subfolder of the target directory. With `target: /downloads` and an *arr download path of `/downloads/tv`, files land in `/downloads/tv`.
+- **`use-categories-putio`** (`PLDR_USE_CATEGORIES_PUTIO`): plundrio creates a subfolder named after the category under the configured put.io folder and uploads the transfer into it (e.g. `<folder>/tv`). plundrio still monitors transfers placed in these subfolders; empty category folders are left in place. Only a single level of category subfolders is supported on put.io.
+
+The two flags are independent — enable either or both. Both default to `false`, preserving the previous flat behavior.
 
 2. **Command-line flags** (see full list with `plundrio run --help`)
 
@@ -257,6 +268,8 @@ export PLDR_TOKEN=your-putio-token
 export PLDR_FOLDER=plundrio
 export PLDR_LISTEN=:9091
 export PLDR_WORKERS=4
+export PLDR_USE_CATEGORIES_TARGET=true
+export PLDR_USE_CATEGORIES_PUTIO=true
 export PLDR_DOWNLOAD_START_WINDOW_ENABLED=true
 export PLDR_DOWNLOAD_START_WINDOW_START=23:00
 export PLDR_DOWNLOAD_START_WINDOW_END=05:00

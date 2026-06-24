@@ -14,6 +14,7 @@ import (
 type PutioClient interface {
 	GetTransfers(ctx context.Context) ([]*putio.Transfer, error)
 	GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error)
+	GetFiles(ctx context.Context, folderID int64) ([]*putio.File, error)
 	RetryTransfer(ctx context.Context, transferID int64) (*putio.Transfer, error)
 	DeleteTransfer(ctx context.Context, transferID int64) error
 	DeleteFile(ctx context.Context, fileID int64) error
@@ -73,19 +74,28 @@ func (m *Manager) GetTransferContext(transferID int64) (*TransferContext, bool) 
 	return m.coordinator.GetTransferContext(transferID)
 }
 
-// SetCategory stores a category for a transfer hash.
-func (m *Manager) SetCategory(hash, category string) {
-	m.categories.Set(hash, category)
+// SetCategory stores a category for a put.io transfer ID.
+func (m *Manager) SetCategory(transferID int64, category string) {
+	m.categories.Set(transferID, category)
 }
 
-// GetCategory returns the category for a transfer hash, or "" if none.
-func (m *Manager) GetCategory(hash string) string {
-	return m.categories.Get(hash)
+// GetCategory returns the category for a put.io transfer ID, or "" if none.
+func (m *Manager) GetCategory(transferID int64) string {
+	return m.categories.Get(transferID)
 }
 
-// RemoveCategory deletes the stored category for a transfer hash.
-func (m *Manager) RemoveCategory(hash string) {
-	m.categories.Remove(hash)
+// RemoveCategory deletes the stored category for a put.io transfer ID.
+func (m *Manager) RemoveCategory(transferID int64) {
+	m.categories.Remove(transferID)
+}
+
+// localCategory returns the category subfolder to use for a transfer's local
+// path, or "" when local categorization is disabled.
+func (m *Manager) localCategory(transferID int64) string {
+	if !m.cfg.UseCategoriesTarget {
+		return ""
+	}
+	return m.categories.Get(transferID)
 }
 
 // New creates a new download manager

@@ -17,7 +17,9 @@ import (
 
 // extractCategory returns the relative category path from downloadDir.
 // For example, if targetDir="/downloads" and downloadDir="/downloads/tv",
-// it returns "tv". Returns "" if downloadDir is empty or equals targetDir.
+// it returns "tv". Returns "" if downloadDir is empty, equals targetDir, or
+// resolves to a location outside targetDir (path traversal), since the category
+// is used to build local filesystem paths.
 func extractCategory(targetDir, downloadDir string) string {
 	if downloadDir == "" {
 		return ""
@@ -26,8 +28,21 @@ func extractCategory(targetDir, downloadDir string) string {
 	if err != nil || rel == "." {
 		return ""
 	}
-	// Clean up any trailing slashes or path oddities
-	return filepath.Clean(rel)
+	rel = filepath.Clean(rel)
+	// Reject categories that escape targetDir (e.g. downloadDir="/etc").
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return ""
+	}
+	return rel
+}
+
+// localCategory returns the category subfolder for a transfer's local path, or
+// "" when local categorization is disabled.
+func (s *Server) localCategory(transferID int64) string {
+	if !s.cfg.UseCategoriesTarget {
+		return ""
+	}
+	return s.dlService.GetCategory(transferID)
 }
 
 // findTransferByHash finds a transfer by its hash string
@@ -47,10 +62,10 @@ func (s *Server) findTransferByHash(ctx context.Context, hash string) (*putio.Tr
 // handleTorrentAdd processes torrent-add requests
 func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (interface{}, error) {
 	var params struct {
-		Filename    string `json:"filename"`    // For .torrent files
-		MetaInfo    string `json:"metainfo"`    // Base64 encoded .torrent
-		MagnetLink  string `json:"magnetLink"`  // Magnet link
-		DownloadDir string `json:"downloadDir"` // Category subfolder (e.g. /downloads/tv)
+		Filename    string `json:"filename"`     // For .torrent files
+		MetaInfo    string `json:"metainfo"`     // Base64 encoded .torrent
+		MagnetLink  string `json:"magnetLink"`   // Magnet link
+		DownloadDir string `json:"download-dir"` // Category dir from the *arr app (e.g. /downloads/tv)
 	}
 
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -58,6 +73,14 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 	}
 
 	category := extractCategory(s.cfg.TargetDir, params.DownloadDir)
+
+	// Resolve the put.io folder to add the transfer to. With put.io
+	// categorization enabled, transfers for a category land in a subfolder.
+	folderID, err := s.putioFolderForCategory(ctx, category)
+	if err != nil {
+		return nil, err
+	}
+
 	var name string
 	var transfer *putio.Transfer
 
@@ -74,7 +97,7 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 		if name == "" {
 			name = "unknown.torrent"
 		}
-		uploadedTransfer, err := s.client.UploadFile(ctx, torrentData, name, s.cfg.FolderID)
+		uploadedTransfer, err := s.client.UploadFile(ctx, torrentData, name, folderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload torrent: %w", err)
 		}
@@ -85,7 +108,7 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 			Str("type", "torrent").
 			Str("name", name).
 			Str("category", category).
-			Int64("folder_id", s.cfg.FolderID).
+			Int64("folder_id", folderID).
 			Msg("Torrent file uploaded")
 	} else {
 		// Handle magnet links
@@ -98,7 +121,7 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 		}
 
 		// Add magnet link to Put.io
-		addedTransfer, err := s.client.AddTransfer(ctx, name, s.cfg.FolderID)
+		addedTransfer, err := s.client.AddTransfer(ctx, name, folderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add transfer: %w", err)
 		}
@@ -109,7 +132,7 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 			Str("type", "magnet").
 			Str("magnet", name).
 			Str("category", category).
-			Int64("folder_id", s.cfg.FolderID).
+			Int64("folder_id", folderID).
 			Msg("Magnet link added")
 	}
 
@@ -124,12 +147,14 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 			Msg("Put.io returned transfer without info hash")
 	}
 
-	// Store category mapping if we have both a hash and a category
-	if transfer.Hash != "" && category != "" {
-		s.dlService.SetCategory(transfer.Hash, category)
+	// Store the category for the transfer so that local downloads land in the
+	// right subfolder. Keyed by transfer ID, which put.io always populates,
+	// unlike the info hash. Only needed when local categorization is enabled.
+	if category != "" && s.cfg.UseCategoriesTarget {
+		s.dlService.SetCategory(transfer.ID, category)
 		log.Info("rpc").
 			Str("operation", "torrent-add").
-			Str("hash", transfer.Hash).
+			Int64("transfer_id", transfer.ID).
 			Str("category", category).
 			Msg("Stored category for transfer")
 	}
@@ -160,6 +185,44 @@ func torrentAddedResponse(transfer *putio.Transfer, fallbackName string) map[str
 			"name":       name,
 		},
 	}
+}
+
+// putioFolderForCategory returns the put.io folder ID that a transfer with the
+// given category should be added to. When put.io categorization is disabled or
+// the category is empty, the configured folder is returned. Otherwise the
+// category subfolder is created (if needed) under the configured folder.
+func (s *Server) putioFolderForCategory(ctx context.Context, category string) (int64, error) {
+	if !s.cfg.UseCategoriesPutio || category == "" {
+		return s.cfg.FolderID, nil
+	}
+
+	s.catFolderMu.Lock()
+	defer s.catFolderMu.Unlock()
+
+	if id, ok := s.catFolders[category]; ok {
+		return id, nil
+	}
+
+	// Walk the (possibly nested) category path, ensuring each segment exists.
+	parent := s.cfg.FolderID
+	for _, segment := range strings.Split(filepath.ToSlash(category), "/") {
+		if segment == "" {
+			continue
+		}
+		id, err := s.client.EnsureFolderInParent(ctx, segment, parent)
+		if err != nil {
+			return 0, fmt.Errorf("failed to ensure put.io category folder %q: %w", category, err)
+		}
+		parent = id
+	}
+
+	s.catFolders[category] = parent
+	log.Info("rpc").
+		Str("operation", "torrent-add").
+		Str("category", category).
+		Int64("folder_id", parent).
+		Msg("Resolved put.io category folder")
+	return parent, nil
 }
 
 // handleTorrentGet processes torrent-get requests
@@ -254,7 +317,7 @@ func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (inte
 			"name":           t.Name,
 			"eta":            eta,
 			"status":         status,
-			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.dlService.GetCategory(t.Hash)),
+			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.localCategory(t.ID)),
 			"totalSize":      t.Size,
 			"leftUntilDone":  leftUntilDone,
 			"uploadedEver":   t.Uploaded,
@@ -364,7 +427,7 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 
 		// Delete local files if requested (closes #23)
 		if params.DeleteLocalData {
-			category := s.dlService.GetCategory(hash)
+			category := s.localCategory(transfer.ID)
 			localTargetDir := filepath.Join(s.cfg.TargetDir, category)
 			if err := deleteLocalData(localTargetDir, transfer.Name); err != nil {
 				log.Error("rpc").
@@ -383,7 +446,7 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 		}
 
 		// Clean up category mapping
-		s.dlService.RemoveCategory(hash)
+		s.dlService.RemoveCategory(transfer.ID)
 	}
 
 	return struct{}{}, nil

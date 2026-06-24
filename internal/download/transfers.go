@@ -21,15 +21,13 @@ type TransferProcessor struct {
 	targetDir          string
 }
 
-// GetTransfers returns a copy of all transfers for a given folder ID
+// GetTransfers returns a copy of all transfers tracked for the managed folder(s).
+// The transfers map is already filtered to managed folders in checkTransfers, so
+// no additional filtering is needed here.
 func (p *TransferProcessor) GetTransfers() []*putio.Transfer {
 	var allTransfers []*putio.Transfer
 	for _, transfers := range p.transfers {
-		for _, t := range transfers {
-			if t.SaveParentID == p.folderID {
-				allTransfers = append(allTransfers, t)
-			}
-		}
+		allTransfers = append(allTransfers, transfers...)
 	}
 	return allTransfers
 }
@@ -89,9 +87,14 @@ func (p *TransferProcessor) checkTransfers() {
 	// Reset transfer status tracking
 	p.transfers = make(map[string][]*putio.Transfer)
 
+	// Determine which put.io folders we consider "ours". This is the configured
+	// folder plus, when put.io categorization is enabled, its category
+	// subfolders.
+	managed := p.managedFolders()
+
 	// Categorize transfers by status
 	for _, t := range transfers {
-		if t.SaveParentID != p.folderID {
+		if _, ok := managed[t.SaveParentID]; !ok {
 			log.Debug("transfers").
 				Int64("transfer_id", t.ID).
 				Int64("parent_id", t.SaveParentID).
@@ -111,6 +114,37 @@ func (p *TransferProcessor) checkTransfers() {
 
 	// Check for transfers that are in "Completed" state but haven't been fully cleaned up
 	p.finalizeCompletedTransfers()
+}
+
+// managedFolders returns the set of put.io folder IDs whose transfers this
+// processor should handle. It always includes the configured folder. When
+// put.io categorization is enabled, it also includes the configured folder's
+// direct subfolders (the category folders such as "tv" or "movies").
+//
+// Only one level of category subfolders is discovered; deeply-nested put.io
+// categories are not supported by the monitor.
+func (p *TransferProcessor) managedFolders() map[int64]struct{} {
+	managed := map[int64]struct{}{p.folderID: {}}
+
+	if !p.manager.cfg.UseCategoriesPutio {
+		return managed
+	}
+
+	files, err := p.manager.client.GetFiles(p.manager.Context(), p.folderID)
+	if err != nil {
+		log.Warn("transfers").
+			Int64("folder_id", p.folderID).
+			Err(err).
+			Msg("Failed to list category subfolders; monitoring configured folder only")
+		return managed
+	}
+
+	for _, f := range files {
+		if f.IsDir() {
+			managed[f.ID] = struct{}{}
+		}
+	}
+	return managed
 }
 
 // logTransferSummary logs counts of transfers in each status and detailed information for all transfers
@@ -428,7 +462,7 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 
 // shouldDownloadFile determines if a file needs to be downloaded
 func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *putio.File) bool {
-	category := p.manager.GetCategory(transfer.Hash)
+	category := p.manager.localCategory(transfer.ID)
 	targetPath := filepath.Join(p.targetDir, category, transfer.Name, file.Name)
 	info, err := os.Stat(targetPath)
 
@@ -455,7 +489,7 @@ func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *p
 
 // queueFileDownload adds a file to the download queue
 func (p *TransferProcessor) queueFileDownload(transfer *putio.Transfer, file *putio.File) {
-	category := p.manager.GetCategory(transfer.Hash)
+	category := p.manager.localCategory(transfer.ID)
 	p.manager.QueueDownload(downloadJob{
 		FileID:     file.ID,
 		Name:       filepath.Join(category, transfer.Name, file.Name),

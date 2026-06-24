@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,7 @@ type PutioClient interface {
 	GetTransfers(ctx context.Context) ([]*putio.Transfer, error)
 	UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (*putio.Transfer, error)
 	AddTransfer(ctx context.Context, magnetLink string, folderID int64) (*putio.Transfer, error)
+	EnsureFolderInParent(ctx context.Context, name string, parentID int64) (int64, error)
 	DeleteFile(ctx context.Context, fileID int64) error
 	DeleteTransfer(ctx context.Context, transferID int64) error
 }
@@ -28,9 +30,9 @@ type PutioClient interface {
 type DownloadService interface {
 	GetTransfers() []*putio.Transfer
 	GetTransferContext(transferID int64) (*download.TransferContext, bool)
-	SetCategory(hash, category string)
-	GetCategory(hash string) string
-	RemoveCategory(hash string)
+	SetCategory(transferID int64, category string)
+	GetCategory(transferID int64) string
+	RemoveCategory(transferID int64)
 	Stop()
 }
 
@@ -43,6 +45,12 @@ type Server struct {
 	stopChan     chan struct{}
 	dlService    DownloadService
 	quotaWarning atomic.Bool // tracks if we've already warned about quota
+
+	// catFolders caches resolved put.io category folder IDs (category path →
+	// folder ID) so that concurrent torrent-add requests for the same category
+	// don't create duplicate folders or re-list put.io on every request.
+	catFolderMu sync.Mutex
+	catFolders  map[string]int64
 }
 
 // New creates a new RPC server
@@ -53,6 +61,7 @@ func New(cfg *config.Config, client PutioClient, dlService DownloadService) *Ser
 		stopChan:    make(chan struct{}),
 		dlService:   dlService,
 		quotaTicker: time.NewTicker(15 * time.Minute),
+		catFolders:  make(map[string]int64),
 	}
 }
 

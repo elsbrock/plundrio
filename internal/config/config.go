@@ -30,4 +30,17 @@ type Config struct {
 
 	// DownloadStartWindow optionally restricts when new local downloads may start.
 	DownloadStartWindow DownloadStartWindowConfig
+
+	// UseCategoriesTarget, when true, places local downloads into a per-category
+	// subfolder of TargetDir derived from the *arr "download-dir" (e.g. a
+	// download-dir of "/downloads/tv" with TargetDir "/downloads" lands files in
+	// "/downloads/tv"). When false (the default), all files go directly into
+	// TargetDir regardless of the requested category.
+	UseCategoriesTarget bool
+
+	// UseCategoriesPutio, when true, creates a per-category subfolder under the
+	// configured Put.io folder and uploads transfers into it (e.g. category "tv"
+	// uploads into "<folder>/tv"). When false (the default), all transfers are
+	// added directly to the configured folder.
+	UseCategoriesPutio bool
 }

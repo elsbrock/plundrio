@@ -48,23 +48,31 @@ func (c *Client) GetAccountInfo(ctx context.Context) (*putio.AccountInfo, error)
 	return &account, nil
 }
 
-// EnsureFolder creates a folder if it doesn't exist or returns the ID if it does
+// EnsureFolder creates a folder at the put.io root if it doesn't exist, or
+// returns the ID of the existing folder.
 func (c *Client) EnsureFolder(ctx context.Context, name string) (int64, error) {
-	// List files at root to find folder
-	files, _, err := c.client.Files.List(ctx, 0)
+	return c.EnsureFolderInParent(ctx, name, 0)
+}
+
+// EnsureFolderInParent creates a folder named name under parentID if it does not
+// already exist, or returns the ID of the existing folder. Only direct child
+// folders are considered.
+func (c *Client) EnsureFolderInParent(ctx context.Context, name string, parentID int64) (int64, error) {
+	// List files in the parent folder to find an existing folder by name.
+	files, _, err := c.client.Files.List(ctx, parentID)
 	if err != nil {
 		return 0, fmt.Errorf("ensure folder: %w", err)
 	}
 
-	// Check if folder exists
+	// Check if a folder with this name already exists.
 	for _, file := range files {
-		if file.Name == name {
+		if file.Name == name && file.IsDir() {
 			return file.ID, nil
 		}
 	}
 
-	// Create folder if it doesn't exist
-	folder, err := c.client.Files.CreateFolder(ctx, name, 0)
+	// Create the folder if it doesn't exist.
+	folder, err := c.client.Files.CreateFolder(ctx, name, parentID)
 	if err != nil {
 		return 0, fmt.Errorf("ensure folder: %w", err)
 	}
@@ -72,7 +80,9 @@ func (c *Client) EnsureFolder(ctx context.Context, name string) (int64, error) {
 	return folder.ID, nil
 }
 
-// AddTransfer adds a new transfer (torrent) to Put.io.
+// AddTransfer adds a new transfer (torrent) to Put.io. The returned transfer's
+// hash may be empty for freshly-added magnet links whose info-hash put.io has
+// not resolved yet; the ID is always populated.
 func (c *Client) AddTransfer(ctx context.Context, magnetLink string, folderID int64) (*putio.Transfer, error) {
 	transfer, err := c.client.Transfers.Add(ctx, magnetLink, folderID, "")
 	if err != nil {
