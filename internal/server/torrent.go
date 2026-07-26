@@ -59,7 +59,7 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 
 	category := extractCategory(s.cfg.TargetDir, params.DownloadDir)
 	var name string
-	var hash string
+	var transfer *putio.Transfer
 
 	// Handle .torrent file upload if metainfo is provided
 	if params.MetaInfo != "" {
@@ -74,11 +74,11 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 		if name == "" {
 			name = "unknown.torrent"
 		}
-		h, err := s.client.UploadFile(ctx, torrentData, name, s.cfg.FolderID)
+		uploadedTransfer, err := s.client.UploadFile(ctx, torrentData, name, s.cfg.FolderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload torrent: %w", err)
 		}
-		hash = h
+		transfer = uploadedTransfer
 
 		log.Info("rpc").
 			Str("operation", "torrent-add").
@@ -98,11 +98,11 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 		}
 
 		// Add magnet link to Put.io
-		h, err := s.client.AddTransfer(ctx, name, s.cfg.FolderID)
+		addedTransfer, err := s.client.AddTransfer(ctx, name, s.cfg.FolderID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add transfer: %w", err)
 		}
-		hash = h
+		transfer = addedTransfer
 
 		log.Info("rpc").
 			Str("operation", "torrent-add").
@@ -113,20 +113,46 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 			Msg("Magnet link added")
 	}
 
+	if err := validateAddedTransfer(transfer); err != nil {
+		return nil, err
+	}
+
 	// Store category mapping if we have both a hash and a category
-	if hash != "" && category != "" {
-		s.dlService.SetCategory(hash, category)
+	if category != "" {
+		s.dlService.SetCategory(transfer.Hash, category)
 		log.Info("rpc").
 			Str("operation", "torrent-add").
-			Str("hash", hash).
+			Str("hash", transfer.Hash).
 			Str("category", category).
 			Msg("Stored category for transfer")
 	}
 
-	// Return success response
+	return torrentAddedResponse(transfer, name), nil
+}
+
+func validateAddedTransfer(transfer *putio.Transfer) error {
+	if transfer == nil {
+		return fmt.Errorf("put.io did not return the created transfer")
+	}
+	if transfer.ID == 0 || transfer.Hash == "" {
+		return fmt.Errorf("put.io returned incomplete transfer metadata")
+	}
+	return nil
+}
+
+func torrentAddedResponse(transfer *putio.Transfer, fallbackName string) map[string]interface{} {
+	name := transfer.Name
+	if name == "" {
+		name = fallbackName
+	}
+
 	return map[string]interface{}{
-		"torrent-added": map[string]interface{}{},
-	}, nil
+		"torrent-added": map[string]interface{}{
+			"id":         transfer.ID,
+			"hashString": transfer.Hash,
+			"name":       name,
+		},
+	}
 }
 
 // handleTorrentGet processes torrent-get requests

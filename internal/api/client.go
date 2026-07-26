@@ -72,18 +72,18 @@ func (c *Client) EnsureFolder(ctx context.Context, name string) (int64, error) {
 	return folder.ID, nil
 }
 
-// AddTransfer adds a new transfer (torrent) to Put.io and returns its hash.
-func (c *Client) AddTransfer(ctx context.Context, magnetLink string, folderID int64) (string, error) {
+// AddTransfer adds a new transfer (torrent) to Put.io.
+func (c *Client) AddTransfer(ctx context.Context, magnetLink string, folderID int64) (*putio.Transfer, error) {
 	transfer, err := c.client.Transfers.Add(ctx, magnetLink, folderID, "")
 	if err != nil {
-		return "", fmt.Errorf("add transfer: %w", err)
+		return nil, fmt.Errorf("add transfer: %w", err)
 	}
 
 	if transfer.Status == "ERROR" {
-		return "", fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
+		return nil, fmt.Errorf("transfer failed: %s", transfer.ErrorMessage)
 	}
 
-	return transfer.Hash, nil
+	return &transfer, nil
 }
 
 // GetTransfers returns the list of current transfers
@@ -141,18 +141,20 @@ func (c *Client) DeleteFile(ctx context.Context, fileID int64) error {
 	return nil
 }
 
-// UploadFile uploads a torrent file to Put.io and returns the transfer hash
-// if one was created.
-func (c *Client) UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (string, error) {
+// UploadFile uploads a torrent file to Put.io and returns the created transfer.
+func (c *Client) UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (*putio.Transfer, error) {
 	reader := bytes.NewReader(data)
 	upload, err := c.client.Files.Upload(ctx, reader, filename, folderID)
 	if err != nil {
-		return "", fmt.Errorf("failed to upload file: %w", err)
+		return nil, fmt.Errorf("failed to upload file: %w", err)
 	}
-	if upload.Transfer != nil {
-		return upload.Transfer.Hash, nil
+	if upload.Transfer == nil {
+		return nil, fmt.Errorf("uploaded torrent did not create a transfer")
 	}
-	return "", nil
+	if upload.Transfer.Status == "ERROR" {
+		return nil, fmt.Errorf("transfer failed: %s", upload.Transfer.ErrorMessage)
+	}
+	return upload.Transfer, nil
 }
 
 // GetAllTransferFiles recursively gets all files in a transfer

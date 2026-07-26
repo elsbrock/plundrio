@@ -1,10 +1,215 @@
 package server
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/elsbrock/go-putio"
+	"github.com/elsbrock/plundrio/internal/config"
+	"github.com/elsbrock/plundrio/internal/download"
 )
+
+type torrentAddClient struct {
+	addTransfer    *putio.Transfer
+	uploadTransfer *putio.Transfer
+	addMagnet      string
+	uploadData     []byte
+	uploadFilename string
+	folderID       int64
+}
+
+func (c *torrentAddClient) GetAccountInfo(context.Context) (*putio.AccountInfo, error) {
+	return nil, nil
+}
+
+func (c *torrentAddClient) GetTransfers(context.Context) ([]*putio.Transfer, error) {
+	return nil, nil
+}
+
+func (c *torrentAddClient) UploadFile(
+	_ context.Context,
+	data []byte,
+	filename string,
+	folderID int64,
+) (*putio.Transfer, error) {
+	c.uploadData = append([]byte(nil), data...)
+	c.uploadFilename = filename
+	c.folderID = folderID
+	return c.uploadTransfer, nil
+}
+
+func (c *torrentAddClient) AddTransfer(
+	_ context.Context,
+	magnetLink string,
+	folderID int64,
+) (*putio.Transfer, error) {
+	c.addMagnet = magnetLink
+	c.folderID = folderID
+	return c.addTransfer, nil
+}
+
+func (c *torrentAddClient) DeleteFile(context.Context, int64) error {
+	return nil
+}
+
+func (c *torrentAddClient) DeleteTransfer(context.Context, int64) error {
+	return nil
+}
+
+type torrentAddDownloadService struct {
+	categories map[string]string
+}
+
+func (s *torrentAddDownloadService) GetTransfers() []*putio.Transfer {
+	return nil
+}
+
+func (s *torrentAddDownloadService) GetTransferContext(int64) (*download.TransferContext, bool) {
+	return nil, false
+}
+
+func (s *torrentAddDownloadService) SetCategory(hash, category string) {
+	if s.categories == nil {
+		s.categories = make(map[string]string)
+	}
+	s.categories[hash] = category
+}
+
+func (s *torrentAddDownloadService) GetCategory(hash string) string {
+	return s.categories[hash]
+}
+
+func (s *torrentAddDownloadService) RemoveCategory(hash string) {
+	delete(s.categories, hash)
+}
+
+func (s *torrentAddDownloadService) Stop() {}
+
+func TestHandleTorrentAddReturnsMagnetTrackingFields(t *testing.T) {
+	client := &torrentAddClient{
+		addTransfer: &putio.Transfer{ID: 7, Hash: "ABC123", Name: "Example Show"},
+	}
+	service := &torrentAddDownloadService{}
+	server := &Server{
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		client:    client,
+		dlService: service,
+	}
+	magnet := "magnet:?xt=urn:btih:ABC123"
+	args, err := json.Marshal(map[string]string{
+		"magnetLink":  magnet,
+		"downloadDir": "/downloads/tv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := server.handleTorrentAdd(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertTorrentAddedResponse(t, response, 7, "ABC123", "Example Show")
+	if client.addMagnet != magnet || client.folderID != 42 {
+		t.Fatalf("AddTransfer called with magnet %q and folder %d", client.addMagnet, client.folderID)
+	}
+	if got := service.categories["ABC123"]; got != "tv" {
+		t.Fatalf("stored category = %q, want tv", got)
+	}
+}
+
+func TestHandleTorrentAddReturnsMetainfoTrackingFields(t *testing.T) {
+	client := &torrentAddClient{
+		uploadTransfer: &putio.Transfer{ID: 8, Hash: "DEF456", Name: "Example Movie"},
+	}
+	service := &torrentAddDownloadService{}
+	server := &Server{
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		client:    client,
+		dlService: service,
+	}
+	torrentData := []byte("torrent-data")
+	args, err := json.Marshal(map[string]string{
+		"filename": "Example.torrent",
+		"metainfo": base64.StdEncoding.EncodeToString(torrentData),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := server.handleTorrentAdd(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertTorrentAddedResponse(t, response, 8, "DEF456", "Example Movie")
+	if string(client.uploadData) != string(torrentData) ||
+		client.uploadFilename != "Example.torrent" ||
+		client.folderID != 42 {
+		t.Fatalf(
+			"UploadFile called with data %q, filename %q, folder %d",
+			client.uploadData,
+			client.uploadFilename,
+			client.folderID,
+		)
+	}
+}
+
+func TestHandleTorrentAddRejectsIncompleteTrackingMetadata(t *testing.T) {
+	client := &torrentAddClient{
+		addTransfer: &putio.Transfer{ID: 7, Name: "Example Show"},
+	}
+	server := &Server{
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		client:    client,
+		dlService: &torrentAddDownloadService{},
+	}
+	args, err := json.Marshal(map[string]string{
+		"magnetLink": "magnet:?xt=urn:btih:ABC123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.handleTorrentAdd(context.Background(), args); err == nil {
+		t.Fatal("expected incomplete transfer metadata to fail torrent-add")
+	}
+}
+
+func assertTorrentAddedResponse(
+	t *testing.T,
+	response interface{},
+	wantID int64,
+	wantHash string,
+	wantName string,
+) {
+	t.Helper()
+
+	body, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded struct {
+		TorrentAdded struct {
+			ID         int64  `json:"id"`
+			HashString string `json:"hashString"`
+			Name       string `json:"name"`
+		} `json:"torrent-added"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TorrentAdded.ID != wantID ||
+		decoded.TorrentAdded.HashString != wantHash ||
+		decoded.TorrentAdded.Name != wantName {
+		t.Fatalf("unexpected torrent-added response: %s", body)
+	}
+}
 
 func TestDeleteLocalData(t *testing.T) {
 	tests := []struct {

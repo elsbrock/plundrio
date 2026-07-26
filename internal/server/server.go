@@ -18,8 +18,8 @@ import (
 type PutioClient interface {
 	GetAccountInfo(ctx context.Context) (*putio.AccountInfo, error)
 	GetTransfers(ctx context.Context) ([]*putio.Transfer, error)
-	UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (string, error)
-	AddTransfer(ctx context.Context, magnetLink string, folderID int64) (string, error)
+	UploadFile(ctx context.Context, data []byte, filename string, folderID int64) (*putio.Transfer, error)
+	AddTransfer(ctx context.Context, magnetLink string, folderID int64) (*putio.Transfer, error)
 	DeleteFile(ctx context.Context, fileID int64) error
 	DeleteTransfer(ctx context.Context, transferID int64) error
 }
