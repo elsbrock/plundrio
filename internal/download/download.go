@@ -2,7 +2,10 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,11 @@ import (
 
 	grab "github.com/cavaliergopher/grab/v3"
 	"github.com/elsbrock/plundrio/internal/log"
+)
+
+const (
+	maxDownloadRetryRounds = 5
+	baseDownloadRetryDelay = 30 * time.Second
 )
 
 // downloadWorker processes download jobs from the queue
@@ -47,14 +55,22 @@ func (m *Manager) downloadWorker() {
 					Err(err).
 					Msg("Failed to download file")
 
-				// Just remove the file from active files but don't fail the entire transfer
-				// We'll keep the transfer context so we can retry later
+				// Remove the file from active tracking before a possible retry.
 				m.activeFiles.Delete(job.FileID)
 
+				// The normal transfer poll skips transfers with an existing
+				// coordinator context. Explicitly requeue transient local
+				// failures instead of merely retaining a context forever.
+				if isTransientError(err) && m.scheduleDownloadRetry(job, err) {
+					continue
+				}
+
 				// Mark this file as failed in the transfer context
+				m.downloadRetryAttempts.Delete(job.FileID)
 				m.handleFileFailure(job.TransferID)
 				continue
 			}
+			m.downloadRetryAttempts.Delete(job.FileID)
 			// Pass both transferID and fileID to handleFileCompletion
 			// The file cleanup is now handled inside handleFileCompletion
 			m.handleFileCompletion(job.TransferID, job.FileID)
@@ -79,12 +95,14 @@ func (m *Manager) downloadWithRetry(state *DownloadState) error {
 			if !isTransientError(err) {
 				return fmt.Errorf("permanent error on attempt %d: %w", attempt, err)
 			}
-			log.Warn("download").
-				Str("file_name", state.Name).
-				Int("attempt", attempt).
-				Err(err).
-				Msg("Retrying download after error")
-			time.Sleep(time.Second * time.Duration(attempt))
+			if attempt < maxRetries {
+				log.Warn("download").
+					Str("file_name", state.Name).
+					Int("attempt", attempt).
+					Err(err).
+					Msg("Retrying download after error")
+				time.Sleep(time.Second * time.Duration(attempt))
+			}
 			continue
 		}
 		return nil
@@ -103,22 +121,92 @@ func isTransientError(err error) bool {
 		return false
 	}
 
-	// Check for grab errors
-	if err.Error() == "connection reset" ||
-		err.Error() == "connection refused" ||
-		err.Error() == "i/o timeout" {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 
-	// Check for specific grab HTTP errors
-	if strings.Contains(err.Error(), "429") || // Too Many Requests
-		strings.Contains(err.Error(), "503") || // Service Unavailable
-		strings.Contains(err.Error(), "504") || // Gateway Timeout
-		strings.Contains(err.Error(), "502") { // Bad Gateway
+	var networkError net.Error
+	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
 		return true
+	}
+
+	message := strings.ToLower(err.Error())
+	transientMessages := []string{
+		"unexpected eof",
+		"connection reset",
+		"connection refused",
+		"i/o timeout",
+		"broken pipe",
+		"timeout awaiting response headers",
+		"too many requests",
+		"bad gateway",
+		"service unavailable",
+		"gateway timeout",
+		" 429",
+		" 500",
+		" 502",
+		" 503",
+		" 504",
+	}
+	for _, candidate := range transientMessages {
+		if strings.Contains(message, candidate) {
+			return true
+		}
 	}
 
 	return false
+}
+
+func downloadRetryDelay(attempt int) (time.Duration, bool) {
+	if attempt < 1 || attempt > maxDownloadRetryRounds {
+		return 0, false
+	}
+
+	return baseDownloadRetryDelay * time.Duration(1<<(attempt-1)), true
+}
+
+func (m *Manager) scheduleDownloadRetry(job downloadJob, err error) bool {
+	value, _ := m.downloadRetryAttempts.LoadOrStore(job.FileID, 0)
+	attempt := value.(int) + 1
+	retryDelay := m.downloadRetryDelay
+	if retryDelay == nil {
+		retryDelay = downloadRetryDelay
+	}
+	delay, ok := retryDelay(attempt)
+	if !ok {
+		log.Error("download").
+			Str("file_name", job.Name).
+			Int64("file_id", job.FileID).
+			Int("retry_rounds", attempt-1).
+			Err(err).
+			Msg("Download exhausted bounded retry rounds")
+		return false
+	}
+
+	m.downloadRetryAttempts.Store(job.FileID, attempt)
+	log.Warn("download").
+		Str("file_name", job.Name).
+		Int64("file_id", job.FileID).
+		Int("retry_round", attempt).
+		Dur("retry_in", delay).
+		Err(err).
+		Msg("Scheduling failed local download for retry")
+
+	m.workerWg.Add(1)
+	go func() {
+		defer m.workerWg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-m.stopChan:
+			return
+		case <-timer.C:
+			m.QueueDownload(job)
+		}
+	}()
+
+	return true
 }
 
 // downloadFile downloads a file from Put.io to the target directory using grab

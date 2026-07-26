@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/elsbrock/go-putio"
 	"github.com/elsbrock/plundrio/internal/config"
@@ -28,9 +29,11 @@ type Manager struct {
 	client   PutioClient
 	dlConfig *DownloadConfig // Download-specific configuration
 
-	coordinator *TransferCoordinator // Coordinates transfer lifecycle
-	categories  *CategoryStore       // Maps transfer hash → category subfolder
-	activeFiles sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
+	coordinator           *TransferCoordinator // Coordinates transfer lifecycle
+	categories            *CategoryStore       // Maps transfer hash → category subfolder
+	activeFiles           sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
+	downloadRetryAttempts sync.Map             // map[int64]int - bounded local retry rounds by FileID
+	downloadRetryDelay    func(int) (time.Duration, bool)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -97,13 +100,14 @@ func New(cfg *config.Config, client PutioClient) *Manager {
 	}
 
 	m := &Manager{
-		cfg:         cfg,
-		client:      client,
-		dlConfig:    dlConfig,
-		categories:  newCategoryStore(cfg.TargetDir),
-		stopChan:    make(chan struct{}),
-		jobs:        make(chan downloadJob, workerCount*dlConfig.BufferMultiple),
-		activeFiles: sync.Map{},
+		cfg:                cfg,
+		client:             client,
+		dlConfig:           dlConfig,
+		categories:         newCategoryStore(cfg.TargetDir),
+		stopChan:           make(chan struct{}),
+		jobs:               make(chan downloadJob, workerCount*dlConfig.BufferMultiple),
+		activeFiles:        sync.Map{},
+		downloadRetryDelay: downloadRetryDelay,
 	}
 
 	// Initialize coordinator and processor
@@ -210,6 +214,11 @@ func (m *Manager) Stop() {
 func (m *Manager) QueueDownload(job downloadJob) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// A delayed retry can race with shutdown. Never send to the closed queue.
+	if !m.running {
+		return
+	}
 
 	// Check if file is already being downloaded
 	if _, exists := m.activeFiles.Load(job.FileID); exists {
