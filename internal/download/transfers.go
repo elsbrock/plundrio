@@ -1,6 +1,7 @@
 package download
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -346,7 +347,7 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 
 // handleTransferError processes transfer errors appropriately
 func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err error) {
-	if putioErr, ok := err.(*putio.ErrorResponse); ok && putioErr.Type == "NotFound" {
+	if isPutioNotFound(err) {
 		log.Debug("transfers").
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
@@ -363,6 +364,11 @@ func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err er
 		Int64("id", transfer.ID).
 		Err(err).
 		Msg("Failed to get transfer files")
+}
+
+func isPutioNotFound(err error) bool {
+	var putioErr *putio.ErrorResponse
+	return errors.As(err, &putioErr) && putioErr.Type == "NotFound"
 }
 
 // queueTransferFiles processes files in a transfer and queues them for download
