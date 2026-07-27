@@ -159,9 +159,38 @@ func TestHandleTorrentAddReturnsMetainfoTrackingFields(t *testing.T) {
 	}
 }
 
-func TestHandleTorrentAddRejectsIncompleteTrackingMetadata(t *testing.T) {
+func TestHandleTorrentAddAllowsEmptyHashWithoutCategory(t *testing.T) {
 	client := &torrentAddClient{
 		addTransfer: &putio.Transfer{ID: 7, Name: "Example Show"},
+	}
+	service := &torrentAddDownloadService{}
+	server := &Server{
+		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
+		client:    client,
+		dlService: service,
+	}
+	args, err := json.Marshal(map[string]string{
+		"magnetLink":  "magnet:?xt=urn:btih:ABC123",
+		"downloadDir": "/downloads/tv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := server.handleTorrentAdd(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertTorrentAddedResponse(t, response, 7, "", "Example Show")
+	if len(service.categories) != 0 {
+		t.Fatalf("stored categories = %#v, want none", service.categories)
+	}
+}
+
+func TestHandleTorrentAddRejectsMissingTransferID(t *testing.T) {
+	client := &torrentAddClient{
+		addTransfer: &putio.Transfer{Hash: "ABC123", Name: "Example Show"},
 	}
 	server := &Server{
 		cfg:       &config.Config{FolderID: 42, TargetDir: "/downloads"},
@@ -176,7 +205,7 @@ func TestHandleTorrentAddRejectsIncompleteTrackingMetadata(t *testing.T) {
 	}
 
 	if _, err := server.handleTorrentAdd(context.Background(), args); err == nil {
-		t.Fatal("expected incomplete transfer metadata to fail torrent-add")
+		t.Fatal("expected missing transfer ID to fail torrent-add")
 	}
 }
 

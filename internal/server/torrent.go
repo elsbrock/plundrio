@@ -116,9 +116,16 @@ func (s *Server) handleTorrentAdd(ctx context.Context, args json.RawMessage) (in
 	if err := validateAddedTransfer(transfer); err != nil {
 		return nil, err
 	}
+	if transfer.Hash == "" {
+		log.Warn("rpc").
+			Str("operation", "torrent-add").
+			Int64("id", transfer.ID).
+			Str("name", transfer.Name).
+			Msg("Put.io returned transfer without info hash")
+	}
 
 	// Store category mapping if we have both a hash and a category
-	if category != "" {
+	if transfer.Hash != "" && category != "" {
 		s.dlService.SetCategory(transfer.Hash, category)
 		log.Info("rpc").
 			Str("operation", "torrent-add").
@@ -134,7 +141,7 @@ func validateAddedTransfer(transfer *putio.Transfer) error {
 	if transfer == nil {
 		return fmt.Errorf("put.io did not return the created transfer")
 	}
-	if transfer.ID == 0 || transfer.Hash == "" {
+	if transfer.ID == 0 {
 		return fmt.Errorf("put.io returned incomplete transfer metadata")
 	}
 	return nil
