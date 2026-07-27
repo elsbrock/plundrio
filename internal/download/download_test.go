@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+type temporaryOnlyError struct{}
+
+func (temporaryOnlyError) Error() string   { return "temporary network error" }
+func (temporaryOnlyError) Timeout() bool   { return false }
+func (temporaryOnlyError) Temporary() bool { return true }
+
 func TestIsTransientError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -47,7 +53,7 @@ func TestIsTransientError(t *testing.T) {
 		{
 			name: "server_returned_503",
 			err:  errors.New("server returned 503"),
-			want: true,
+			want: false,
 		},
 		{
 			name: "bad_gateway_502",
@@ -72,6 +78,16 @@ func TestIsTransientError(t *testing.T) {
 		{
 			name: "random_non_transient_error",
 			err:  errors.New("some random error"),
+			want: false,
+		},
+		{
+			name: "numeric_movie_path",
+			err:  errors.New("failed to open /downloads/500 Days of Summer/movie.mkv"),
+			want: false,
+		},
+		{
+			name: "deprecated_temporary_without_timeout",
+			err:  temporaryOnlyError{},
 			want: false,
 		},
 		{

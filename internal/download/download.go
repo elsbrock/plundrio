@@ -126,7 +126,7 @@ func isTransientError(err error) bool {
 	}
 
 	var networkError net.Error
-	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+	if errors.As(err, &networkError) && networkError.Timeout() {
 		return true
 	}
 
@@ -142,11 +142,6 @@ func isTransientError(err error) bool {
 		"bad gateway",
 		"service unavailable",
 		"gateway timeout",
-		" 429",
-		" 500",
-		" 502",
-		" 503",
-		" 504",
 	}
 	for _, candidate := range transientMessages {
 		if strings.Contains(message, candidate) {
