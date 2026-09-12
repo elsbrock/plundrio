@@ -6,6 +6,7 @@ folder: "plundrio"					# Folder name on Put.io
 token: "" 									# Get a token with get-token
 listen: ":9091"							# Transmission RPC server address
 workers: 4									# Number of download workers
+stalled-transfer-timeout: 6h # Report unchanged Put.io downloads after this duration (0 disables)
 download_start_window:       # Optional local download start window
   enabled: false
   start: "23:00"
@@ -14,5 +15,6 @@ log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,non
 
 # Environment variables:
 # PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS,
+# PLDR_STALLED_TRANSFER_TIMEOUT,
 # PLDR_DOWNLOAD_START_WINDOW_ENABLED, PLDR_DOWNLOAD_START_WINDOW_START,
 # PLDR_DOWNLOAD_START_WINDOW_END, PLDR_LOG_LEVEL

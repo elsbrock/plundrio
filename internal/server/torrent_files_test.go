@@ -217,11 +217,12 @@ func TestHandleTorrentRemoveBoundsFailuresAndRetainsOwnership(t *testing.T) {
 	var decoded struct {
 		Torrents []struct {
 			Status      int
+			Error       int
 			ErrorString string
 		}
 	}
 	decodeResponse(t, response, &decoded)
-	if len(decoded.Torrents) != 1 || decoded.Torrents[0].Status != trStatusStopped || decoded.Torrents[0].ErrorString == "" {
+	if len(decoded.Torrents) != 1 || decoded.Torrents[0].Status != trStatusStopped || decoded.Torrents[0].Error != trErrorLocal || decoded.Torrents[0].ErrorString == "" {
 		t.Fatalf("pending removal not actionable: %+v", decoded)
 	}
 	client.deleteTransferErr = nil

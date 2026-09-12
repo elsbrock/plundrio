@@ -244,12 +244,17 @@ listen: ":9091"                # Transmission RPC server address
 workers: 4                     # Number of download workers
 use-categories-target: false   # Put local downloads into per-category subfolders (e.g. <target>/tv)
 use-categories-putio: false    # Create per-category subfolders on put.io (e.g. <folder>/tv)
+stalled-transfer-timeout: 6h   # Report unchanged Put.io downloads after this duration (0 disables)
 download_start_window:         # Optional local download start window
   enabled: false
   start: "23:00"
   end: "05:00"
 log_level: "info"              # Log level (trace,debug,info,warn,error,fatal,panic,none,pretty)
 ```
+
+`stalled-transfer-timeout` tracks the downloaded byte count of each Put.io transfer. The default is `6h`; set it to `0` to disable detection. Unchanged bytes in `DOWNLOADING` produce Transmission error `3` (`TR_STAT_LOCAL_ERROR`). This deliberately lets Sonarr/Radarr treat the transfer as a failed download: depending on their failed-download handling settings, they may blocklist the release, grab a replacement, and request `torrent-remove`, which deletes the original remote transfer and may delete local data. Plundrio's stall detector itself only reports the error. Completed-transfer removal through the seed-policy fields is separately limited to locally processed transfers.
+
+A temporary move to `COMPLETING` preserves the no-progress baseline, but stall errors are reported only in `DOWNLOADING`. Any change in the byte count resets the baseline, including during `COMPLETING`; completion, other inactive states, and disappearance from the monitored list discard it. Restarting plundrio establishes a fresh observation window. Detection may occur up to one polling interval after the timeout.
 
 `download_start_window` only gates when plundrio may begin a new local download. It does not stop Put.io transfers from being created, and it does not interrupt downloads that are already in progress.
 
@@ -274,6 +279,7 @@ export PLDR_LISTEN=:9091
 export PLDR_WORKERS=4
 export PLDR_USE_CATEGORIES_TARGET=true
 export PLDR_USE_CATEGORIES_PUTIO=true
+export PLDR_STALLED_TRANSFER_TIMEOUT=6h
 export PLDR_DOWNLOAD_START_WINDOW_ENABLED=true
 export PLDR_DOWNLOAD_START_WINDOW_START=23:00
 export PLDR_DOWNLOAD_START_WINDOW_END=05:00

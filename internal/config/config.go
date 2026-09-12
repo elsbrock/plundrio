@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // DownloadStartWindowConfig gates when new local downloads may begin.
 // It only affects the start of local downloads, not ongoing transfers.
 type DownloadStartWindowConfig struct {
@@ -27,6 +29,10 @@ type Config struct {
 
 	// WorkerCount is the number of concurrent download workers (default: 4)
 	WorkerCount int
+
+	// StalledTransferTimeout is how long a downloading Put.io transfer may make
+	// no byte progress before it is reported as stalled. Zero disables detection.
+	StalledTransferTimeout time.Duration
 
 	// DownloadStartWindow optionally restricts when new local downloads may start.
 	DownloadStartWindow DownloadStartWindowConfig

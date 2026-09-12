@@ -101,7 +101,7 @@ func TestReviewRPCWarningNeverClaimsCompletion(t *testing.T) {
 					t.Fatal(err)
 				}
 				info := response.(map[string]interface{})["torrents"].([]map[string]interface{})[0]
-				if info["status"] != trStatusStopped || info["percentDone"] != 0.5 || info["leftUntilDone"].(int64) <= 0 || info["error"] != false || info["errorString"] != download.NeedsReviewMessage || info["rateDownload"] != 0 || info["rateUpload"] != 0 || info["eta"] != -1 {
+				if info["status"] != trStatusStopped || info["percentDone"] != 0.5 || info["leftUntilDone"].(int64) <= 0 || info["error"] != trErrorNone || info["errorString"] != download.NeedsReviewMessage || info["rateDownload"] != 0 || info["rateUpload"] != 0 || info["eta"] != -1 {
 					t.Fatalf("unsafe review RPC: %+v", info)
 				}
 				if len(info["files"].([]transmissionFile)) != 0 {
@@ -156,7 +156,7 @@ func TestReviewRetirementPreservesFilesAndCanRetryAfterRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			info := response.(map[string]interface{})["torrents"].([]map[string]interface{})[0]
-			if info["error"] != false || info["percentDone"] != 0.5 || info["plundrioState"] != "needs-review" {
+			if info["error"] != trErrorNone || info["percentDone"] != 0.5 || info["plundrioState"] != "needs-review" {
 				t.Fatalf("failed retirement must remain a review warning, got %+v", info)
 			}
 			restarted := download.New(srv.cfg, client)
