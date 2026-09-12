@@ -17,6 +17,9 @@ func applyReviewStatus(info map[string]interface{}, size int, includeFiles bool)
 	info["rateUpload"] = 0
 	info["eta"] = -1
 	info["error"] = false // #50's integer wire-format commit changes this to 0.
+	info["seedRatioMode"] = transmissionLimitModeUnlimited
+	info["seedIdleMode"] = transmissionLimitModeUnlimited
+	info["secondsSeeding"] = int64(0)
 	info["errorString"] = download.NeedsReviewMessage
 	info["plundrioState"] = "needs-review"
 	if includeFiles {

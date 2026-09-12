@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,14 +80,16 @@ type torrentAddDownloadService struct {
 	transfers        []*putio.Transfer
 	removedTransfers []int64
 	pending          map[int64]string
+	contexts         map[int64]*download.TransferContext
 }
 
 func (s *torrentAddDownloadService) GetTransfers() []*putio.Transfer {
 	return s.transfers
 }
 
-func (s *torrentAddDownloadService) GetTransferContext(int64) (*download.TransferContext, bool) {
-	return nil, false
+func (s *torrentAddDownloadService) GetTransferContext(transferID int64) (*download.TransferContext, bool) {
+	ctx, ok := s.contexts[transferID]
+	return ctx, ok
 }
 
 func (s *torrentAddDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, bool) {
@@ -286,6 +291,145 @@ func assertTorrentAddedResponse(
 		decoded.TorrentAdded.HashString != wantHash ||
 		decoded.TorrentAdded.Name != wantName {
 		t.Fatalf("unexpected torrent-added response: %s", body)
+	}
+}
+
+type torrentGetRPCResponse struct {
+	Result    string `json:"result"`
+	Arguments struct {
+		Torrents []torrentGetRPCTorrent `json:"torrents"`
+	} `json:"arguments"`
+}
+
+type torrentGetRPCTorrent struct {
+	HashString     string  `json:"hashString"`
+	Status         int     `json:"status"`
+	LeftUntilDone  int64   `json:"leftUntilDone"`
+	SeedRatioMode  int     `json:"seedRatioMode"`
+	SeedRatioLimit float64 `json:"seedRatioLimit"`
+	SeedIdleMode   int     `json:"seedIdleMode"`
+	SeedIdleLimit  int64   `json:"seedIdleLimit"`
+	SecondsSeeding int64   `json:"secondsSeeding"`
+}
+
+func TestTorrentGetReportsCompletedTransfersAsRemovable(t *testing.T) {
+	completedCtx := download.NewTransferContext(1, 1, download.TransferLifecycleProcessed)
+	completedCtx.SetTotalSize(1000)
+	completedCtx.AddDownloadedBytes(1000)
+
+	copyingCtx := download.NewTransferContext(2, 1, download.TransferLifecycleDownloading)
+	copyingCtx.SetTotalSize(1000)
+	copyingCtx.AddDownloadedBytes(500)
+
+	downloadService := &torrentAddDownloadService{
+		transfers: []*putio.Transfer{
+			{ID: 1, Hash: "completed", Name: "completed.mkv", PercentDone: 100, Status: "COMPLETED", Size: 1000},
+			{ID: 2, Hash: "copying", Name: "copying.mkv", PercentDone: 100, Status: "COMPLETED", Size: 1000},
+			{ID: 3, Hash: "error", Name: "error.mkv", PercentDone: 30, Status: "ERROR", Size: 1000},
+		},
+		contexts: map[int64]*download.TransferContext{
+			1: completedCtx,
+			2: copyingCtx,
+		},
+	}
+
+	server := &Server{
+		cfg:       &config.Config{TargetDir: "/downloads"},
+		dlService: downloadService,
+	}
+	requestBody := []byte(`{"method":"torrent-get","arguments":{"fields":["hashString","status","leftUntilDone","secondsSeeding","seedRatioLimit","seedRatioMode","seedIdleLimit","seedIdleMode"]}}`)
+	request := httptest.NewRequest(http.MethodPost, "/transmission/rpc", bytes.NewReader(requestBody))
+	request.Header.Set("X-Transmission-Session-Id", "123")
+	responseRecorder := httptest.NewRecorder()
+
+	server.handleRPC(responseRecorder, request)
+
+	if responseRecorder.Code != http.StatusOK {
+		t.Fatalf("torrent-get status = %d, want %d", responseRecorder.Code, http.StatusOK)
+	}
+
+	var response torrentGetRPCResponse
+	if err := json.NewDecoder(responseRecorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode torrent-get response: %v", err)
+	}
+	if response.Result != "success" {
+		t.Fatalf("torrent-get result = %q, want success", response.Result)
+	}
+
+	torrentsByHash := make(map[string]torrentGetRPCTorrent, len(response.Arguments.Torrents))
+	for _, torrent := range response.Arguments.Torrents {
+		torrentsByHash[torrent.HashString] = torrent
+	}
+
+	tests := []struct {
+		hash           string
+		status         int
+		leftUntilDone  int64
+		seedIdleMode   int
+		secondsSeeding int64
+	}{
+		{hash: "completed", status: trStatusSeed, seedIdleMode: 1, secondsSeeding: 1},
+		{hash: "copying", status: trStatusDownload, leftUntilDone: 500, seedIdleMode: 2},
+		{hash: "error", status: trStatusStopped, leftUntilDone: 700, seedIdleMode: 2},
+	}
+
+	for _, tt := range tests {
+		got, ok := torrentsByHash[tt.hash]
+		if !ok {
+			t.Errorf("torrent %q missing from response", tt.hash)
+			continue
+		}
+		if got.Status != tt.status ||
+			got.LeftUntilDone != tt.leftUntilDone ||
+			got.SeedRatioMode != 2 ||
+			got.SeedRatioLimit != 0 ||
+			got.SeedIdleMode != tt.seedIdleMode ||
+			got.SeedIdleLimit != 0 ||
+			got.SecondsSeeding != tt.secondsSeeding {
+			t.Errorf("torrent %q has unexpected RPC fields: %+v", tt.hash, got)
+		}
+	}
+}
+
+func TestTorrentGetRequiresProcessedLifecycleForRemovability(t *testing.T) {
+	for _, state := range []download.TransferLifecycleState{
+		download.TransferLifecycleInitial,
+		download.TransferLifecycleCompleted,
+	} {
+		t.Run(fmt.Sprint(state), func(t *testing.T) {
+			ctx := download.NewTransferContext(1, 1, state)
+			ctx.SetTotalSize(1000)
+			ctx.AddDownloadedBytes(1000)
+			assertNotRemovable(t, ctx)
+		})
+	}
+	t.Run("no local context", func(t *testing.T) { assertNotRemovable(t, nil) })
+}
+
+func assertNotRemovable(t *testing.T, ctx *download.TransferContext) {
+	t.Helper()
+	service := &torrentAddDownloadService{
+		transfers: []*putio.Transfer{{ID: 1, Hash: "pending", Status: "COMPLETED", PercentDone: 100, Size: 1000}},
+		contexts:  map[int64]*download.TransferContext{},
+	}
+	if ctx != nil {
+		service.contexts[1] = ctx
+	}
+	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, dlService: service}
+	request := httptest.NewRequest(http.MethodPost, "/transmission/rpc", bytes.NewBufferString(`{"method":"torrent-get","arguments":{"fields":["seedIdleMode","secondsSeeding"]}}`))
+	request.Header.Set("X-Transmission-Session-Id", "123")
+	recorder := httptest.NewRecorder()
+	server.handleRPC(recorder, request)
+	var response torrentGetRPCResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || response.Result != "success" || len(response.Arguments.Torrents) != 1 {
+		t.Fatalf("unexpected RPC response: %d %s", recorder.Code, recorder.Body.String())
+	}
+	got := response.Arguments.Torrents[0]
+	if got.SeedIdleMode != transmissionLimitModeUnlimited || got.SecondsSeeding != 0 {
+		t.Fatalf("unprocessed transfer marked removable: %+v", got)
 	}
 }
 

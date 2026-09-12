@@ -103,6 +103,10 @@ plundrio implements a specialized state tracking system to ensure seamless integ
    - For completed transfers: progress = 100% with "seeding" status
    - This two-phase progress tracking gives *arr applications accurate visibility into both remote and local download status
 
+3. **Completed-transfer removal**:
+   - Only locally processed transfers report that their per-torrent idle limit has been reached, allowing *arr to request removal after import.
+   - `seedRatioMode: 2` reports unlimited seeding and overrides the ratio goal configured in *arr, because put.io owns seeding. Plundrio uses the idle-limit fields to signal removability instead.
+
 This approach ensures reliable integration with *arr applications while optimizing put.io storage usage.
 
 ## 📋 Prerequisites

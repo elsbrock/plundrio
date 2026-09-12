@@ -107,6 +107,9 @@ func TestReviewRPCWarningNeverClaimsCompletion(t *testing.T) {
 				if len(info["files"].([]transmissionFile)) != 0 {
 					t.Fatal("invented ownership")
 				}
+				if info["seedRatioMode"] != transmissionLimitModeUnlimited || info["seedIdleMode"] != transmissionLimitModeUnlimited || info["secondsSeeding"] != int64(0) {
+					t.Fatalf("review must not enable automatic removal: %+v", info)
+				}
 			})
 		}
 	}
