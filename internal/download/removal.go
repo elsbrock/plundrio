@@ -31,7 +31,11 @@ func (m *Manager) RemovalPending(id int64) bool {
 }
 
 func (m *Manager) removalCategory(id int64) (string, error) {
-	data, err := os.ReadFile(m.removalPath(id))
+	return readRemovalCategory(m.removalPath(id))
+}
+
+func readRemovalCategory(markerPath string) (string, error) {
+	data, err := os.ReadFile(markerPath)
 	if err != nil {
 		return "", err
 	}
@@ -47,6 +51,58 @@ func (m *Manager) removalCategory(id int64) (string, error) {
 		return "", fmt.Errorf("invalid removal category %q", category)
 	}
 	return category, nil
+}
+
+// PendingRemovalPaths returns local transfer roots whose ownership is retained
+// by removal markers. Reconciliation must protect them even when the transfer
+// moved outside managed folders or disappeared while a local worker drains.
+// Missing or malformed ownership evidence fails closed instead of guessing.
+func PendingRemovalPaths(targetDir string) ([]string, error) {
+	store := newTransferFileStore(targetDir)
+	entries, err := os.ReadDir(store.stateDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read pending removal state: %w", err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), removalSuffix) {
+			continue
+		}
+		id, err := strconv.ParseInt(strings.TrimSuffix(entry.Name(), removalSuffix), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid removal marker %q", entry.Name())
+		}
+		category, err := readRemovalCategory(filepath.Join(store.stateDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("pending removal %d: %w", id, err)
+		}
+		files, ok := store.Get(id)
+		if !ok {
+			return nil, fmt.Errorf("pending removal %d has no readable authoritative manifest; resolve the pending removal before reconciliation", id)
+		}
+		for _, file := range files {
+			name := filepath.FromSlash(file.Name)
+			if !filepath.IsLocal(name) || filepath.Clean(name) != name || file.Length < 0 {
+				return nil, fmt.Errorf("pending removal %d has invalid manifest path %q", id, file.Name)
+			}
+			transferRoot := strings.Split(filepath.ToSlash(name), "/")[0]
+			if transferRoot == "." || IsReservedTransferName(transferRoot) {
+				return nil, fmt.Errorf("pending removal %d has invalid transfer root %q", id, transferRoot)
+			}
+			// Protect the whole transfer directory, including incomplete files
+			// that a still-draining worker has not renamed to their final name.
+			paths = append(paths, transferRoot)
+			if category != "" {
+				// Category configuration may have changed since this was stored.
+				// Retain both layouts, as ordinary active-transfer protection does.
+				paths = append(paths, filepath.Join(category, transferRoot))
+			}
+		}
+	}
+	return paths, nil
 }
 
 // PrepareRemoval durably suppresses new processing before remote deletion.

@@ -97,3 +97,23 @@ func TestCategoryStore_RemovePersists(t *testing.T) {
 		t.Errorf("After reload id 2 = %q, want %q", got, "movies")
 	}
 }
+
+func TestLoadCategoriesUsesStoreFormat(t *testing.T) {
+	dir := t.TempDir()
+	store := newCategoryStore(dir)
+	store.Set(42, "tv")
+	categories, err := LoadCategories(dir)
+	if err != nil || categories[42] != "tv" {
+		t.Fatalf("shared load = %v, %v", categories, err)
+	}
+	for _, contents := range []string{"null", "{}", "{", "{\"hash\":\"tv\"}"} {
+		if err := os.WriteFile(filepath.Join(dir, CategoryStateFileName), []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadCategories(dir)
+		valid := contents == "null" || contents == "{}"
+		if valid && (err != nil || loaded == nil) || !valid && err == nil {
+			t.Fatalf("LoadCategories(%q) = %v, %v", contents, loaded, err)
+		}
+	}
+}

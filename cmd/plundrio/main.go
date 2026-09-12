@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,9 +29,11 @@ const (
 var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:     "plundrio",
-	Short:   "Put.io automation tool",
-	Version: version,
+	Use:           "plundrio",
+	Short:         "Put.io automation tool",
+	Version:       version,
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 var runCmd = &cobra.Command{
@@ -337,10 +340,12 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(getTokenCmd)
 	rootCmd.AddCommand(generateConfigCmd)
+	rootCmd.AddCommand(newReconcileCmd())
 }
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatal("main").Err(err).Msg("Command execution failed")
+		_, _ = fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
 	}
 }

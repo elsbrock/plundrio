@@ -2,6 +2,7 @@ package download
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,7 +10,30 @@ import (
 	"github.com/elsbrock/plundrio/internal/log"
 )
 
-const stateFileName = ".plundrio-state.json"
+// CategoryStateFileName is reserved for the persisted transfer categories.
+const CategoryStateFileName = ".plundrio-state.json"
+
+const stateFileName = CategoryStateFileName
+
+// LoadCategories reads the same ID-keyed state as CategoryStore. Missing state
+// is empty; malformed or unreadable state is an error so cleanup can fail closed.
+func LoadCategories(targetDir string) (map[int64]string, error) {
+	data, err := os.ReadFile(filepath.Join(targetDir, CategoryStateFileName))
+	if os.IsNotExist(err) {
+		return map[int64]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read category state: %w", err)
+	}
+	categories := make(map[int64]string)
+	if err := json.Unmarshal(data, &categories); err != nil {
+		return nil, fmt.Errorf("parse category state: %w", err)
+	}
+	if categories == nil {
+		categories = make(map[int64]string)
+	}
+	return categories, nil
+}
 
 // CategoryStore persists a put.io transfer ID → category mapping so that
 // downloads land in the correct sub-directory (e.g. "tv", "movies") even across
@@ -31,7 +55,7 @@ func newCategoryStore(targetDir string) *CategoryStore {
 
 // Load reads persisted categories from disk. A missing file is not an error.
 func (cs *CategoryStore) Load() {
-	data, err := os.ReadFile(cs.stateFile)
+	categories, err := LoadCategories(filepath.Dir(cs.stateFile))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Error("categories").Err(err).Msg("Failed to load category state")
@@ -42,9 +66,7 @@ func (cs *CategoryStore) Load() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	if err := json.Unmarshal(data, &cs.mapping); err != nil {
-		log.Error("categories").Err(err).Msg("Failed to parse category state")
-	}
+	cs.mapping = categories
 }
 
 // Set stores a category for the given transfer ID and persists to disk.
