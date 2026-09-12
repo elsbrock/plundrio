@@ -59,7 +59,7 @@ put.io essentially performs the same download process.
 
 - 🔄 Seamless integration with Sonarr, Radarr, and other *arr applications
   supporting Transmission RPC
-- 🌐 Stateless architecture; multiple instances per put.io account supported
+- 🌐 Minimal local state; multiple instances per put.io account supported, one per download directory
 - ⚡ Fast and efficient downloads from put.io (with resume support)
 - 🔄 Parallel downloads with configurable worker count to maximize bandwidth
 - 🧹 Automatic cleanup of completed transfers
@@ -390,7 +390,11 @@ Yes, plundrio will monitor and download any transfers in your configured put.io 
 plundrio focuses on automation and integration with *arr applications, while the official client offers a more general-purpose interface.
 
 **Can I run multiple instances of plundrio?**<br/>
-Yes, plundrio is stateless and can be run in multiple instances, even pointing to the same put.io account with different configurations.
+Yes, as long as each instance uses its own `--target` directory. plundrio keeps a small
+amount of state there: `.plundrio-state.json` holds the put.io transfer ID → category
+mapping used by `use-categories-target`, and `.plundrio-files/` holds per-transfer file
+manifests, removal markers, and review holds (see below). Instances sharing a download
+directory will overwrite each other's copies of this state.
 
 **Does plundrio support VPNs or proxies?**<br/>
 plundrio uses your system's network configuration. If your system routes through a VPN or proxy, plundrio will use that connection.
