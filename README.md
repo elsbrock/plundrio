@@ -59,7 +59,7 @@ put.io essentially performs the same download process.
 
 - 🔄 Seamless integration with Sonarr, Radarr, and other *arr applications
   supporting Transmission RPC
-- 🌐 Minimal local state; multiple instances per put.io account supported, one per download directory
+- 🌐 Stateless architecture; multiple instances per put.io account supported
 - ⚡ Fast and efficient downloads from put.io (with resume support)
 - 🔄 Parallel downloads with configurable worker count to maximize bandwidth
 - 🧹 Automatic cleanup of completed transfers
@@ -380,16 +380,95 @@ Yes, plundrio will monitor and download any transfers in your configured put.io 
 plundrio focuses on automation and integration with *arr applications, while the official client offers a more general-purpose interface.
 
 **Can I run multiple instances of plundrio?**<br/>
-Yes, as long as each instance uses its own `--target` directory. plundrio keeps a small
-amount of state there: `.plundrio-state.json` holds the put.io transfer ID → category
-mapping used by `use-categories-target`. Instances sharing a download directory will
-overwrite each other's copy of it.
+Yes, plundrio is stateless and can be run in multiple instances, even pointing to the same put.io account with different configurations.
 
 **Does plundrio support VPNs or proxies?**<br/>
 plundrio uses your system's network configuration. If your system routes through a VPN or proxy, plundrio will use that connection.
 
 **How can I monitor plundrio's status?**<br/>
 plundrio logs its activities to stdout. You can redirect these logs to a file or use a log management system.
+
+## Transmission restart and file metadata
+
+After restart, a Put.io `COMPLETED` or `SEEDING` transfer initially reports
+50% / downloading until Plundrio restores or verifies its local completion.
+This changes the status existing *arr clients see on restart and prevents
+premature import or removal while the local copy is still pending.
+
+Upgrades can encounter old records whose source has gone but which have no
+manifest: either source ID zero or a positive source ID returning NotFound.
+Neither shape proves local completion. These records now enter **NeedsReview**,
+not completed or failed: stopped, 50%, unknown ETA, zero transfer rates, and an
+explanatory `errorString` without a download-failure signal. An unknown size uses
+one byte remaining as a sentinel, not a measured payload size. No file list or
+ownership is invented. Missing child folders during listing and invalid existing
+manifests remain errors; they are not classified as legacy source absence.
+
+The hold is persisted in `.plundrio-files/<id>.review.json`. Preserve these files:
+restarts, source reappearance, and remote ERROR status do not resume processing
+or authorize automatic deletion. Corrupt review markers also hold the record
+and require state repair. If storage cannot persist a marker, the current
+process remains held, but restart durability is not guaranteed; repair storage
+before restarting, and allow a monitor poll to persist the hold after repair.
+This is a safety change for zero-ID legacy records previously
+assumed complete, as well as positive-ID records previously reported failed.
+
+### Resolving a legacy review hold
+
+First verify the actual retained/imported copy in the consuming application;
+an old 100% display, matching directory name, or same-size file is not proof.
+If the copy is missing, recover or download it separately before retiring the
+old record. Do not fabricate a manifest or remove a review marker to force
+completion. A restored source or changed identity requires operator investigation;
+it is deliberately not an automatic resume/retirement path.
+
+After verifying the retained copy, an operator may send this explicit extension
+to the existing Transmission RPC endpoint, replacing `101` with the **one exact
+numeric transfer ID** reviewed:
+
+```json
+{"method":"torrent-remove","arguments":{"ids":[101],"delete-local-data":false,"plundrio-retire-reviewed":true,"plundrio-copy-verified":true}}
+```
+
+This acknowledgment is an operator assertion, not machine proof. The server
+rechecks the review marker, unchanged remote identity, completed remote status,
+absent source root and absent manifest. It removes **only the transfer record**:
+neither Put.io source deletion nor local deletion is called. Any failure retains
+the durable hold; retry the same explicit request after resolving the error.
+Ordinary `torrent-remove` is rejected for review holds, even after restart or
+failed retirement. No batch IDs, hashes, missing acknowledgment, or local-delete
+request is accepted. Retirement does not backfill ownership: preserved local
+files may subsequently appear unmanaged to explicit reconciliation.
+
+Ordinary removal of a remotely ready record also waits until its local state
+is classified; retry after the next monitor poll. This closes the initial
+listing/retirement race without disabling explicit cancellation of active
+downloads. Failed reviewed retirement remains a warning, not a download error.
+
+`.plundrio-files/` is reserved for transfer ownership manifests in the download
+root. Preserve it across restarts and exclude it from media scans, filesystem
+reconciliation, and unmanaged-file deletion. Transmission `files` names are
+relative to `downloadDir`; `bytesCompleted` currently reports whole-transfer
+completion (zero until complete, then each file's full length).
+
+`torrent-remove` persists a removal marker before deleting remote data. Remote
+transfer deletion gets at most three attempts per request. If it still fails,
+the RPC returns an error, the torrent reports stopped with a removal error,
+and local processing stays suspended across restarts. Local files are retained
+on that failure even when `delete-local-data` was requested; repeat the request
+after fixing Put.io access to finish removal.
+
+Pending removals release active category, transfer, and retry tracking. Their
+category and ownership manifest stay on disk under `.plundrio-files/`, without
+a permanent in-memory tombstone cache. Metadata is removed after a successful
+retry or after a successful full Put.io listing confirms the ID is absent and
+any active local worker has drained. Moving a transfer outside the configured
+folder does not count as deletion. Disk retention is bounded by surviving
+remote records, not a time limit: during an API outage these safety records
+remain. To resolve one manually, delete that exact transfer on Put.io and let
+the next successful poll reclaim its metadata; do not delete marker files to
+force a retry. An already-running file download may finish, but queued work,
+new attempts, and source cleanup cannot restart the removed transfer.
 
 ## 🤝 Contributing
 

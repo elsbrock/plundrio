@@ -44,17 +44,26 @@ type progressResult struct {
 // tracked by the download manager. Otherwise we rely solely on the Put.io
 // transfer metadata.
 func calculateProgress(in progressInput) progressResult {
-	// When we have a transfer context with files, calculate the 50/50 split.
-	if in.TransferCtx != nil && in.TransferCtx.TotalFiles > 0 {
-		return calculateProgressWithContext(in)
+	if in.TransferCtx != nil && in.TransferCtx.GetState() == download.TransferLifecycleNeedsReview {
+		// Unknown size still needs a positive sentinel: zero signals done.
+		return progressResult{PercentDone: 0.5, Status: trStatusStopped, LeftUntilDone: max(int64(in.PutioSize), 1)}
+	}
+	if in.TransferCtx != nil {
+		// Restored transfers have no live file count, but their processed state
+		// is still authoritative after a restart.
+		if in.TransferCtx.TotalFiles > 0 || in.TransferCtx.GetState() == download.TransferLifecycleProcessed {
+			return calculateProgressWithContext(in)
+		}
 	}
 
-	// Completed/seeding on Put.io without local context → already done.
+	// Put.io completion is only the first half of Plundrio's work. Until the
+	// download manager establishes a local context, report local copying as
+	// pending so importers cannot race ahead of manifest creation and download.
 	if in.PutioStatus == "COMPLETED" || in.PutioStatus == "SEEDING" {
 		return progressResult{
-			PercentDone:   1.0,
-			LeftUntilDone: 0,
-			Status:        trStatusSeed,
+			PercentDone:   0.5,
+			LeftUntilDone: int64(in.PutioSize),
+			Status:        trStatusDownload,
 		}
 	}
 

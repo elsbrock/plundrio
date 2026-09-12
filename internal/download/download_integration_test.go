@@ -229,6 +229,74 @@ func TestRetryThroughDownloadWithRetryCountsBytesOnce(t *testing.T) {
 
 // A stalled download must be abandoned rather than pinning a worker forever:
 // grab itself applies no timeout.
+func TestRemovedStalledWorkerDrainsWithoutRetryOrSourceCleanup(t *testing.T) {
+	const size = 1 << 20
+	started := make(chan struct{}, 1)
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, 1024))
+		w.(http.Flusher).Flush()
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	m := newDownloadManager(t, srv.URL)
+	m.dlConfig.DownloadStallTimeout = 100 * time.Millisecond
+	deleted := make(chan int64, 1)
+	m.client.(*fakeClient).deletedFiles = deleted
+	startTransfer(t, m, size)
+	if err := m.transferFiles.Set(1, []TransferFile{{Name: "movie/movie.mkv", Length: size}}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() { m.downloadWorker(); close(stopped) }()
+	defer func() { close(m.stopChan); <-stopped }()
+	m.QueueDownload(downloadJob{FileID: 10, TransferID: 1, Name: "movie.mkv"})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("download never started")
+	}
+	if _, err := m.PrepareRemoval(1, false); err != nil {
+		t.Fatal(err)
+	}
+	m.RemoveTransfer(1)
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for m.activeFileCount(1) != 0 {
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("removed stalled worker did not drain")
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("removed worker retried %d HTTP requests", requests.Load())
+	}
+	if _, ok := m.GetTransferContext(1); ok {
+		t.Fatal("removed worker recreated transfer")
+	}
+	if !m.RemovalPending(1) {
+		t.Fatal("worker discarded suppression before remote absence was confirmed")
+	}
+	if _, ok := m.GetTransferFiles(1); !ok {
+		t.Fatal("worker discarded ownership evidence")
+	}
+	select {
+	case id := <-deleted:
+		t.Fatalf("removed worker deleted source %d", id)
+	default:
+	}
+	m.pruneRemovals(m.pendingRemovals(), nil)
+	if m.RemovalPending(1) {
+		t.Fatal("drained worker metadata not reclaimed")
+	}
+}
+
 func TestStalledDownloadIsCancelled(t *testing.T) {
 	const size = 1 << 20
 	stop := make(chan struct{})

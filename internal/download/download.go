@@ -32,6 +32,11 @@ func (m *Manager) downloadWorker() {
 			log.Info("download").Msg("Worker stopping due to shutdown request")
 			return
 		case job := <-m.jobs:
+			if m.RemovalPending(job.TransferID) {
+				m.activeFiles.Delete(job.FileID)
+				m.downloadRetryAttempts.Delete(job.FileID)
+				continue
+			}
 			state := &DownloadState{
 				FileID:     job.FileID,
 				Name:       job.Name,
@@ -46,6 +51,7 @@ func (m *Manager) downloadWorker() {
 						Msg("Download cancelled due to shutdown")
 					// Just remove from active files for cancelled downloads
 					m.activeFiles.Delete(job.FileID)
+					m.downloadRetryAttempts.Delete(job.FileID)
 					// Don't call FailTransfer for cancellations
 					continue
 				}
@@ -91,6 +97,9 @@ func (m *Manager) downloadWithRetry(state *DownloadState) error {
 			// the bytes it already reported would be counted twice and
 			// progress could climb past 100%.
 			m.rollbackAttemptBytes(state)
+			if m.RemovalPending(state.TransferID) {
+				return NewDownloadCancelledError(state.Name, "transfer removal pending")
+			}
 
 			// Check for cancellation first - pass it through without wrapping
 			if downloadErr, ok := err.(*DownloadError); ok && downloadErr.Type == "DownloadCancelled" {
@@ -203,6 +212,15 @@ func downloadRetryDelay(attempt int) (time.Duration, bool) {
 }
 
 func (m *Manager) scheduleDownloadRetry(job downloadJob, err error) bool {
+	transferCtx, exists := m.coordinator.GetTransferContext(job.TransferID)
+	if !exists {
+		m.downloadRetryAttempts.Delete(job.FileID)
+		return false
+	}
+	if m.RemovalPending(job.TransferID) {
+		m.downloadRetryAttempts.Delete(job.FileID)
+		return false
+	}
 	value, _ := m.downloadRetryAttempts.LoadOrStore(job.FileID, 0)
 	attempt := value.(int) + 1
 	retryDelay := m.downloadRetryDelay
@@ -239,7 +257,9 @@ func (m *Manager) scheduleDownloadRetry(job downloadJob, err error) bool {
 		case <-m.stopChan:
 			return
 		case <-timer.C:
-			m.QueueDownload(job)
+			// Removal can reclaim its disk marker before this timer fires.
+			// Queue admission checks the same generation before claiming a file.
+			m.queueDownload(job, transferCtx)
 		}
 	}()
 
@@ -248,6 +268,9 @@ func (m *Manager) scheduleDownloadRetry(job downloadJob, err error) bool {
 
 // downloadFile downloads a file from Put.io to the target directory using grab
 func (m *Manager) downloadFile(state *DownloadState) error {
+	if m.RemovalPending(state.TransferID) {
+		return NewDownloadCancelledError(state.Name, "transfer removal pending")
+	}
 	// Derive context from manager's lifecycle context
 	ctx, cancel := context.WithCancelCause(m.Context())
 	defer cancel(nil)

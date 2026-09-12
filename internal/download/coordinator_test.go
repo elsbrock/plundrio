@@ -24,6 +24,7 @@ func newTestManager() *Manager {
 		stopChan:   make(chan struct{}),
 		jobs:       make(chan downloadJob, 5),
 	}
+	m.transferFiles = newTransferFileStore(cfg.TargetDir)
 	m.processor = newTransferProcessor(m)
 	m.coordinator = NewTransferCoordinator()
 	return m

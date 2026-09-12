@@ -180,15 +180,18 @@ func TestDownloadRetryDelayIsBounded(t *testing.T) {
 
 func TestScheduleDownloadRetryRequeuesJob(t *testing.T) {
 	manager := &Manager{
-		jobs:     make(chan downloadJob, 1),
-		stopChan: make(chan struct{}),
-		running:  true,
+		coordinator:   NewTransferCoordinator(),
+		transferFiles: newTransferFileStore(t.TempDir()),
+		jobs:          make(chan downloadJob, 1),
+		stopChan:      make(chan struct{}),
+		running:       true,
 		downloadRetryDelay: func(attempt int) (time.Duration, bool) {
 			return 0, attempt == 1
 		},
 	}
 	job := downloadJob{FileID: 11, Name: "example.mkv", TransferID: 22}
 
+	manager.coordinator.InitiateTransfer(job.TransferID, "example", job.FileID, 1)
 	if !manager.scheduleDownloadRetry(job, io.ErrUnexpectedEOF) {
 		t.Fatal("expected transient failure to schedule a retry")
 	}
@@ -211,11 +214,14 @@ func TestScheduleDownloadRetryRequeuesJob(t *testing.T) {
 
 func TestScheduleDownloadRetryStopsAtBound(t *testing.T) {
 	manager := &Manager{
-		jobs:     make(chan downloadJob, 1),
-		stopChan: make(chan struct{}),
+		coordinator:   NewTransferCoordinator(),
+		transferFiles: newTransferFileStore(t.TempDir()),
+		jobs:          make(chan downloadJob, 1),
+		stopChan:      make(chan struct{}),
 	}
 	job := downloadJob{FileID: 11, Name: "example.mkv", TransferID: 22}
 	manager.downloadRetryAttempts.Store(job.FileID, maxDownloadRetryRounds)
+	manager.coordinator.InitiateTransfer(job.TransferID, "example", job.FileID, 1)
 
 	if manager.scheduleDownloadRetry(job, io.ErrUnexpectedEOF) {
 		t.Fatal("did not expect a retry after the configured bound")
@@ -227,15 +233,18 @@ func TestScheduleDownloadRetryStopsAtBound(t *testing.T) {
 
 func TestScheduleDownloadRetryCancelsDuringShutdown(t *testing.T) {
 	manager := &Manager{
-		jobs:     make(chan downloadJob, 1),
-		stopChan: make(chan struct{}),
-		running:  true,
+		coordinator:   NewTransferCoordinator(),
+		transferFiles: newTransferFileStore(t.TempDir()),
+		jobs:          make(chan downloadJob, 1),
+		stopChan:      make(chan struct{}),
+		running:       true,
 		downloadRetryDelay: func(int) (time.Duration, bool) {
 			return time.Hour, true
 		},
 	}
 	job := downloadJob{FileID: 11, Name: "example.mkv", TransferID: 22}
 
+	manager.coordinator.InitiateTransfer(job.TransferID, "example", job.FileID, 1)
 	if !manager.scheduleDownloadRetry(job, io.ErrUnexpectedEOF) {
 		t.Fatal("expected retry to be scheduled")
 	}

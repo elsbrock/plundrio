@@ -73,7 +73,7 @@ func TestCalculateProgress(t *testing.T) {
 			wantLeftUntilDone: 0,
 		},
 		// ---------------------------------------------------------------
-		// No context, terminal put.io statuses → 100%
+		// No context, terminal put.io statuses → local copy still pending
 		// ---------------------------------------------------------------
 		{
 			name: "no context, COMPLETED status",
@@ -82,9 +82,9 @@ func TestCalculateProgress(t *testing.T) {
 				PutioStatus:      "COMPLETED",
 				PutioSize:        1000,
 			},
-			wantPercentDone:   1.0,
-			wantStatus:        trStatusSeed,
-			wantLeftUntilDone: 0,
+			wantPercentDone:   0.5,
+			wantStatus:        trStatusDownload,
+			wantLeftUntilDone: 1000,
 		},
 		{
 			name: "no context, SEEDING status",
@@ -93,9 +93,9 @@ func TestCalculateProgress(t *testing.T) {
 				PutioStatus:      "SEEDING",
 				PutioSize:        1000,
 			},
-			wantPercentDone:   1.0,
-			wantStatus:        trStatusSeed,
-			wantLeftUntilDone: 0,
+			wantPercentDone:   0.5,
+			wantStatus:        trStatusDownload,
+			wantLeftUntilDone: 1000,
 		},
 		// ---------------------------------------------------------------
 		// With context, partial local download (50/50 split)
@@ -134,6 +134,18 @@ func TestCalculateProgress(t *testing.T) {
 				PutioStatus:      "COMPLETED",
 				PutioSize:        1000,
 				TransferCtx:      newTestTransferCtx(download.TransferLifecycleProcessed, 3, 3, 1000, 1000),
+			},
+			wantPercentDone:   1.0,
+			wantStatus:        trStatusSeed,
+			wantLeftUntilDone: 0,
+		},
+		{
+			name: "with restored context, processed state",
+			input: progressInput{
+				PutioPercentDone: 100,
+				PutioStatus:      "COMPLETED",
+				PutioSize:        1000,
+				TransferCtx:      newTestTransferCtx(download.TransferLifecycleProcessed, 0, 0, 0, 0),
 			},
 			wantPercentDone:   1.0,
 			wantStatus:        trStatusSeed,

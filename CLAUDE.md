@@ -90,6 +90,26 @@ deferred until no files are still in flight. Contexts are otherwise never
 removed, so `torrent-remove` is what keeps tracking state from growing for the
 process lifetime.
 
+`NeedsReview` means source absence without a manifest, never verified completion
+or download failure. `.plundrio-files/<id>.review.json` holds original identity
+across restarts and remote status changes; load holds before status dispatch.
+Do not auto-retry, complete, infer ownership, or ordinarily remove held records.
+Only explicit exact-ID reviewed retirement with retained-copy acknowledgment
+may remove the transfer record (never file data), after revalidation. Preserve
+the review marker through failed retirement and remove it with bookkeeping only
+after confirmed remote deletion. Missing child-listing404 is not root absence.
+
+`torrent-remove` first persists a disk-only `.plundrio-files/<id>.removing.json`
+marker and releases the coordinator, retry, and active category records. Marked
+IDs are excluded from processing after restart and remain visible as stopped
+with an actionable removal error. The marker stores the category while the
+existing manifest preserves file ownership. Remote deletion has three attempts
+per request; failures retain disk evidence, not an in-memory tombstone map.
+Markers/manifests are reclaimed on deletion success or confirmed absence in a
+successful full account listing, after active workers drain. Delayed retries
+must still reference the same coordinator context before enqueueing, since a
+marker can be reclaimed before a retry timer fires.
+
 ### Key Types
 
 - `Manager` (`manager.go`): Orchestrates workers, monitor loop, coordinator

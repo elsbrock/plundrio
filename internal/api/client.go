@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/elsbrock/go-putio"
@@ -167,11 +168,28 @@ func (c *Client) UploadFile(ctx context.Context, data []byte, filename string, f
 	return upload.Transfer, nil
 }
 
+// TransferSourceNotFoundError distinguishes a missing source root from a child
+// disappearing during a recursive listing. Only the former proves source absence.
+type TransferSourceNotFoundError struct {
+	FileID int64
+	Err    error
+}
+
+func (e *TransferSourceNotFoundError) Error() string {
+	return fmt.Sprintf("transfer source %d not found: %v", e.FileID, e.Err)
+}
+
+func (e *TransferSourceNotFoundError) Unwrap() error { return e.Err }
+
 // GetAllTransferFiles recursively gets all files in a transfer
 func (c *Client) GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error) {
 	// First check if the fileID is a file itself
 	file, err := c.client.Files.Get(ctx, fileID)
 	if err != nil {
+		var response *putio.ErrorResponse
+		if fileID > 0 && errors.As(err, &response) && response.Type == "NotFound" {
+			return nil, &TransferSourceNotFoundError{FileID: fileID, Err: err}
+		}
 		return nil, fmt.Errorf("get transfer files: %w", err)
 	}
 

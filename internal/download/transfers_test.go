@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/elsbrock/go-putio"
+	"github.com/elsbrock/plundrio/internal/api"
 	"github.com/elsbrock/plundrio/internal/config"
 )
 
@@ -30,19 +34,19 @@ func TestIsPutioNotFoundUnwrapsClientErrors(t *testing.T) {
 	}
 }
 
-func TestHandleTransferErrorCleansUpWrappedNotFound(t *testing.T) {
-	manager := newTestManager()
+func TestHandleTransferErrorHoldsWrappedRootNotFoundWithoutManifest(t *testing.T) {
+	manager := newTestProcessor(t, 42, false, &fakePutioClient{}).manager
 	transfer := &putio.Transfer{ID: 1, Name: "Example", FileID: 2}
-	err := fmt.Errorf("get transfer files: %w", &putio.ErrorResponse{Type: "NotFound"})
+	err := fmt.Errorf("get transfer files: %w", &api.TransferSourceNotFoundError{FileID: 2, Err: &putio.ErrorResponse{Type: "NotFound"}})
 
 	manager.processor.handleTransferError(transfer, err)
 
 	transferContext, ok := manager.coordinator.GetTransferContext(transfer.ID)
 	if !ok {
-		t.Fatal("expected wrapped NotFound error to initialize transfer cleanup")
+		t.Fatal("expected wrapped root NotFound to initialize review tracking")
 	}
-	if got := transferContext.GetState(); got != TransferLifecycleProcessed {
-		t.Fatalf("transfer state = %s, want Processed", got)
+	if got := transferContext.GetState(); got != TransferLifecycleNeedsReview {
+		t.Fatalf("transfer state = %s, want NeedsReview", got)
 	}
 }
 
@@ -62,10 +66,12 @@ const dirContentType = "application/x-directory"
 // fakePutioClient is a minimal PutioClient for exercising the transfer monitor.
 // Only the methods used by the tests are wired up; the rest return zero values.
 type fakePutioClient struct {
-	files    []*putio.File
-	filesErr error
+	files            []*putio.File
+	filesErr         error
+	allTransferFiles []*putio.File
 
-	getFilesCalls int
+	getFilesCalls            int
+	getAllTransferFilesCalls int
 }
 
 func (f *fakePutioClient) GetTransfers(ctx context.Context) ([]*putio.Transfer, error) {
@@ -73,12 +79,185 @@ func (f *fakePutioClient) GetTransfers(ctx context.Context) ([]*putio.Transfer, 
 }
 
 func (f *fakePutioClient) GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error) {
-	return nil, nil
+	f.getAllTransferFilesCalls++
+	return f.allTransferFiles, nil
+}
+
+func TestProcessTransferPersistsExactFileManifest(t *testing.T) {
+	client := &fakePutioClient{allTransferFiles: []*putio.File{
+		{ID: 11, Name: "one.m4b", Size: 3},
+		{ID: 12, Name: "two.epub", Size: 6},
+	}}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "Book", FileID: 500}
+
+	p.processTransfer(transfer)
+
+	got, ok := p.manager.transferFiles.Get(101)
+	want := []TransferFile{
+		{Name: "Book/one.m4b", Length: 3},
+		{Name: "Book/two.epub", Length: 6},
+	}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("manifest = %+v, exists=%v, want %+v", got, ok, want)
+	}
+}
+
+func TestBuildTransferFileManifestRejectsUnsafeOrCollidingPaths(t *testing.T) {
+	transfer := &putio.Transfer{ID: 101, Name: "Book"}
+	if _, err := buildTransferFileManifest(transfer, []*putio.File{{Name: "../escape.m4b", Size: 1}}); err == nil {
+		t.Fatal("expected escaping file name to fail")
+	}
+	if _, err := buildTransferFileManifest(transfer, []*putio.File{
+		{Name: "same.m4b", Size: 1},
+		{Name: "same.m4b", Size: 1},
+	}); err == nil {
+		t.Fatal("expected colliding local file names to fail")
+	}
+	transfer.Name = transferFilesStateDirName
+	if _, err := buildTransferFileManifest(transfer, []*putio.File{{Name: "101.json", Size: 1}}); err == nil {
+		t.Fatal("expected reserved manifest directory name to fail")
+	}
+}
+
+func TestProcessTransferManifestFailureIsMarkedFailed(t *testing.T) {
+	client := &fakePutioClient{allTransferFiles: []*putio.File{
+		{ID: 11, Name: "same.m4b", Size: 3},
+		{ID: 12, Name: "same.m4b", Size: 6},
+	}}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "Book", FileID: 500}
+
+	p.processTransfer(transfer)
+
+	ctx, ok := p.manager.coordinator.GetTransferContext(transfer.ID)
+	if !ok {
+		t.Fatal("expected manifest failure to initialize transfer tracking")
+	}
+	if state := ctx.GetState(); state != TransferLifecycleFailed {
+		t.Fatalf("transfer state = %s, want Failed", state)
+	}
+	if err := ctx.GetError(); err == nil {
+		t.Fatal("expected manifest failure reason to be recorded")
+	}
+}
+
+func TestProcessTransferManifestPersistenceFailureIsMarkedFailed(t *testing.T) {
+	client := &fakePutioClient{allTransferFiles: []*putio.File{
+		{ID: 11, Name: "book.m4b", Size: 3},
+	}}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "Book", FileID: 500}
+	if err := os.WriteFile(p.manager.transferFiles.stateDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	p.processTransfer(transfer)
+
+	ctx, ok := p.manager.coordinator.GetTransferContext(transfer.ID)
+	if !ok || ctx.GetState() != TransferLifecycleFailed {
+		t.Fatalf("manifest persistence failure was not tracked as Failed: context=%v exists=%v", ctx, ok)
+	}
+	if err := ctx.GetError(); err == nil {
+		t.Fatal("expected manifest persistence failure reason to be recorded")
+	}
+}
+
+func TestProcessTransferCompletesWhenAllFilesAlreadyExist(t *testing.T) {
+	client := &fakePutioClient{allTransferFiles: []*putio.File{
+		{ID: 11, Name: "book.m4b", Size: 4},
+	}}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "Book", FileID: 500}
+	path := filepath.Join(p.targetDir, transfer.Name, "book.m4b")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("book"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p.processTransfer(transfer)
+
+	ctx, ok := p.manager.coordinator.GetTransferContext(transfer.ID)
+	if !ok || ctx.GetState() != TransferLifecycleProcessed {
+		t.Fatalf("existing files were not completed and processed: context=%v exists=%v", ctx, ok)
+	}
 }
 
 func (f *fakePutioClient) GetFiles(ctx context.Context, folderID int64) ([]*putio.File, error) {
 	f.getFilesCalls++
 	return f.files, f.filesErr
+}
+
+func TestProcessTransferHoldsLegacyCleanedTransferWithoutManifest(t *testing.T) {
+	client := &fakePutioClient{}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "already cleaned", FileID: 0}
+
+	p.processTransfer(transfer)
+
+	if client.getAllTransferFilesCalls != 0 {
+		t.Fatalf("GetAllTransferFiles called %d times, want 0 for Put.io root", client.getAllTransferFilesCalls)
+	}
+	ctx, ok := p.manager.coordinator.GetTransferContext(101)
+	if !ok || ctx.GetState() != TransferLifecycleNeedsReview {
+		t.Fatalf("legacy transfer was not held for review: context=%v exists=%v", ctx, ok)
+	}
+}
+
+func TestProcessTransferRejectsInvalidExistingManifestAsLegacy(t *testing.T) {
+	for _, contents := range []string{"corrupt", "[]", "null", "directory"} {
+		t.Run(contents, func(t *testing.T) {
+			client := &fakePutioClient{}
+			p := newTestProcessor(t, 100, false, client)
+			path := p.manager.transferFiles.path(101)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if contents == "directory" {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			p.processTransfer(&putio.Transfer{ID: 101, Name: "Book", FileID: 0})
+			ctx, ok := p.manager.GetTransferContext(101)
+			if !ok || ctx.GetState() != TransferLifecycleFailed || ctx.GetError() == nil {
+				t.Fatalf("invalid existing manifest restored as legacy completion: context=%v exists=%v", ctx, ok)
+			}
+			if client.getAllTransferFilesCalls != 0 {
+				t.Fatal("invalid manifest caused Put.io root lookup")
+			}
+		})
+	}
+}
+
+func TestProcessTransferRestoresCleanedTransferFromManifest(t *testing.T) {
+	client := &fakePutioClient{}
+	p := newTestProcessor(t, 100, false, client)
+	transfer := &putio.Transfer{ID: 101, Name: "already cleaned", FileID: 0}
+	path := filepath.Join(p.targetDir, transfer.Name, "book.m4b")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("book"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.manager.transferFiles.Set(101, []TransferFile{{Name: "already cleaned/book.m4b", Length: 4}}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.processTransfer(transfer)
+
+	if client.getAllTransferFilesCalls != 0 {
+		t.Fatalf("GetAllTransferFiles called %d times, want 0 for Put.io root", client.getAllTransferFilesCalls)
+	}
+	ctx, ok := p.manager.coordinator.GetTransferContext(101)
+	if !ok || ctx.GetState() != TransferLifecycleProcessed {
+		t.Fatalf("transfer was not restored as processed: context=%v exists=%v", ctx, ok)
+	}
 }
 
 func (f *fakePutioClient) RetryTransfer(ctx context.Context, transferID int64) (*putio.Transfer, error) {

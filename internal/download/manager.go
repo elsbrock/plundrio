@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -32,6 +33,8 @@ type Manager struct {
 
 	coordinator           *TransferCoordinator // Coordinates transfer lifecycle
 	categories            *CategoryStore       // Maps transfer hash → category subfolder
+	transferFiles         *TransferFileStore   // Persists exact local files by transfer ID
+	removalMu             sync.RWMutex         // Serializes removal with state publication and queue admission
 	activeFiles           sync.Map             // map[int64]int64 - tracks files being downloaded, FileID -> TransferID
 	downloadRetryAttempts sync.Map             // map[int64]int - bounded local retry rounds by FileID
 	downloadRetryDelay    func(int) (time.Duration, bool)
@@ -80,6 +83,11 @@ func (m *Manager) GetTransferContext(transferID int64) (*TransferContext, bool) 
 	return m.coordinator.GetTransferContext(transferID)
 }
 
+// GetTransferFiles returns the exact persisted file list for a transfer.
+func (m *Manager) GetTransferFiles(transferID int64) ([]TransferFile, bool) {
+	return m.transferFiles.Get(transferID)
+}
+
 // SetCategory stores a category for a put.io transfer ID.
 func (m *Manager) SetCategory(transferID int64, category string) {
 	m.categories.Set(transferID, category)
@@ -87,6 +95,10 @@ func (m *Manager) SetCategory(transferID int64, category string) {
 
 // GetCategory returns the category for a put.io transfer ID, or "" if none.
 func (m *Manager) GetCategory(transferID int64) string {
+	if m.RemovalPending(transferID) {
+		category, _ := m.removalCategory(transferID)
+		return category
+	}
 	return m.categories.Get(transferID)
 }
 
@@ -101,14 +113,34 @@ func (m *Manager) localCategory(transferID int64) string {
 	if !m.cfg.UseCategoriesTarget {
 		return ""
 	}
-	return m.categories.Get(transferID)
+	return m.GetCategory(transferID)
 }
 
 // RemoveTransfer stops tracking a transfer and drops its local bookkeeping.
 // Called once *arr removes the torrent; without it, tracking state would grow
 // for the lifetime of the process.
 func (m *Manager) RemoveTransfer(transferID int64) {
+	m.removalMu.Lock()
+	defer m.removalMu.Unlock()
 	m.processor.forget(transferID)
+	// In-flight workers must finish before removing their suppression marker.
+	if m.activeFileCount(transferID) > 0 && m.RemovalPending(transferID) {
+		return
+	}
+	if err := m.transferFiles.Remove(transferID); err != nil {
+		log.Error("files").
+			Int64("transfer_id", transferID).
+			Err(err).
+			Msg("Failed to remove transfer file state")
+		return
+	}
+	if err := m.removeReview(transferID); err != nil {
+		log.Error("files").Int64("transfer_id", transferID).Err(err).Msg("Failed to remove review hold")
+		return
+	}
+	if err := os.Remove(m.removalPath(transferID)); err != nil && !os.IsNotExist(err) {
+		log.Error("files").Err(err).Msg("Failed to remove transfer removal marker")
+	}
 }
 
 // activeFileCount returns how many of a transfer's files are still downloading.
@@ -139,6 +171,7 @@ func New(cfg *config.Config, client PutioClient) *Manager {
 		client:             client,
 		dlConfig:           dlConfig,
 		categories:         newCategoryStore(cfg.TargetDir),
+		transferFiles:      newTransferFileStore(cfg.TargetDir),
 		stopChan:           make(chan struct{}),
 		jobs:               make(chan downloadJob, workerCount*dlConfig.BufferMultiple),
 		activeFiles:        sync.Map{},
@@ -155,12 +188,17 @@ func New(cfg *config.Config, client PutioClient) *Manager {
 		if !ok {
 			return NewTransferNotFoundError(transferID)
 		}
-
-		// Delete only the source file from Put.io, but keep the transfer
-		// Zero identifies Put.io's account root, not a transfer-owned file.
+		// Put.io uses zero for the root folder. Completed transfer records can
+		// remain after their source file has been deleted, so never pass that
+		// sentinel to DeleteFile after a restart.
 		if state.FileID == 0 {
+			log.Debug("cleanup").
+				Int64("transfer_id", transferID).
+				Msg("Skipping source deletion: transfer has no associated file")
 			return nil
 		}
+
+		// Delete only the source file from Put.io, but keep the transfer
 		if err := m.client.DeleteFile(m.Context(), state.FileID); err != nil {
 			log.Error("cleanup").
 				Int64("transfer_id", transferID).
@@ -247,29 +285,51 @@ func (m *Manager) Stop() {
 // once the queue is full, and blocking there while holding m.mu would
 // deadlock against Stop.
 func (m *Manager) QueueDownload(job downloadJob) {
+	ctx, _ := m.coordinator.GetTransferContext(job.TransferID)
+	m.queueDownload(job, ctx)
+}
+
+func (m *Manager) queueDownload(job downloadJob, expected *TransferContext) {
+	if !m.claimDownload(job, expected) {
+		return
+	}
+	// The active claim survives a blocked send, retaining suppression until
+	// a worker sees and discards the job if removal happened in the meantime.
+	select {
+	case m.jobs <- job:
+	case <-m.stopChan:
+		m.activeFiles.Delete(job.FileID)
+	}
+}
+
+func (m *Manager) claimDownload(job downloadJob, expected *TransferContext) bool {
+	m.removalMu.RLock()
+	defer m.removalMu.RUnlock()
+	current, exists := m.coordinator.GetTransferContext(job.TransferID)
+	if !exists || expected == nil || current != expected {
+		m.downloadRetryAttempts.Delete(job.FileID)
+		return false
+	}
+	if m.RemovalPending(job.TransferID) {
+		m.downloadRetryAttempts.Delete(job.FileID)
+		return false
+	}
 	// Refuse new work once shutdown has begun. This is checked before claiming
 	// the file because the queue is buffered: after the workers exit, a send
 	// still succeeds, which would otherwise leave the file marked active with
 	// nothing left to run it.
 	select {
 	case <-m.stopChan:
-		return
+		return false
 	default:
 	}
 
 	// LoadOrStore makes "not already downloading" and claiming the file a
 	// single atomic step.
 	if _, alreadyActive := m.activeFiles.LoadOrStore(job.FileID, job.TransferID); alreadyActive {
-		return
+		return false
 	}
-
-	select {
-	case m.jobs <- job:
-		// Successfully queued
-	case <-m.stopChan:
-		// Manager is shutting down, just remove from active files
-		m.activeFiles.Delete(job.FileID)
-	}
+	return true
 }
 
 // cleanupTransfer handles the deletion of a completed transfer and its source files
