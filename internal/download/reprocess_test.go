@@ -154,7 +154,7 @@ func TestRemoveTransferClearsAllBookkeeping(t *testing.T) {
 	markFailed(t, m, transfer.ID)
 	m.processor.shouldProcess(transfer) // records a reprocess attempt
 	m.processor.retryAttempts.Store(transfer.ID, 2)
-	if err := m.transferFiles.Set(transfer.ID, []TransferFile{{Name: "stuck/file.m4b", Length: 1}}); err != nil {
+	if err := m.transferFiles.setManifest(LocalManifest{TransferID: transfer.ID, LocalRoot: "stuck", Files: []TransferFile{{Name: "stuck/file.m4b", Length: 1}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,7 +169,7 @@ func TestRemoveTransferClearsAllBookkeeping(t *testing.T) {
 	if _, ok := m.processor.retryAttempts.Load(transfer.ID); ok {
 		t.Error("retry attempts should be cleared")
 	}
-	if _, ok := m.transferFiles.Get(transfer.ID); ok {
+	if manifest, err := m.transferFiles.loadManifest(transfer.ID); err != nil || len(manifest.Files) != 0 {
 		t.Error("transfer file manifest should be gone")
 	}
 }

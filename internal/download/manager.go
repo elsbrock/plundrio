@@ -83,11 +83,6 @@ func (m *Manager) GetTransferContext(transferID int64) (*TransferContext, bool) 
 	return m.coordinator.GetTransferContext(transferID)
 }
 
-// GetTransferFiles returns the exact persisted file list for a transfer.
-func (m *Manager) GetTransferFiles(transferID int64) ([]TransferFile, bool) {
-	return m.transferFiles.Get(transferID)
-}
-
 // SetCategory stores a category for a put.io transfer ID.
 func (m *Manager) SetCategory(transferID int64, category string) {
 	m.categories.Set(transferID, category)

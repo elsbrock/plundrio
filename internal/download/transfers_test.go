@@ -93,13 +93,14 @@ func TestProcessTransferPersistsExactFileManifest(t *testing.T) {
 
 	p.processTransfer(transfer)
 
-	got, ok := p.manager.transferFiles.Get(101)
+	manifest, err := p.manager.GetTransferManifest(transfer, ManifestCheckPending)
+	got := manifest.Files
 	want := []TransferFile{
 		{Name: "Book/one.m4b", Length: 3},
 		{Name: "Book/two.epub", Length: 6},
 	}
-	if !ok || !reflect.DeepEqual(got, want) {
-		t.Fatalf("manifest = %+v, exists=%v, want %+v", got, ok, want)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("manifest = %+v, error=%v, want %+v", got, err, want)
 	}
 }
 
@@ -245,7 +246,7 @@ func TestProcessTransferRestoresCleanedTransferFromManifest(t *testing.T) {
 	if err := os.WriteFile(path, []byte("book"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.manager.transferFiles.Set(101, []TransferFile{{Name: "already cleaned/book.m4b", Length: 4}}); err != nil {
+	if err := p.manager.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "already cleaned", Files: []TransferFile{{Name: "already cleaned/book.m4b", Length: 4}}}); err != nil {
 		t.Fatal(err)
 	}
 

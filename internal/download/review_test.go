@@ -187,7 +187,7 @@ func TestReviewRetirementRejectsChangedSourceAndManifest(t *testing.T) {
 			case "moved":
 				current.SaveParentID++
 			case "manifest":
-				if err := m.transferFiles.Set(101, []TransferFile{{Name: "Book/file", Length: 1}}); err != nil {
+				if err := m.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "Book", Files: []TransferFile{{Name: "Book/file", Length: 1}}}); err != nil {
 					t.Fatal(err)
 				}
 			case "corrupt-manifest":
@@ -262,7 +262,7 @@ func TestReviewRetirementRevalidatesAfterNetwork(t *testing.T) {
 		// Also proves the network call does not hold removalMu.
 		m.removalMu.Lock()
 		defer m.removalMu.Unlock()
-		if err := m.transferFiles.Set(101, []TransferFile{{Name: "Book/file", Length: 1}}); err != nil {
+		if err := m.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "Book", Files: []TransferFile{{Name: "Book/file", Length: 1}}}); err != nil {
 			t.Fatal(err)
 		}
 		return nil, &api.TransferSourceNotFoundError{FileID: id, Err: &putio.ErrorResponse{Type: "NotFound"}}

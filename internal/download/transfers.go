@@ -448,7 +448,9 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 	}
 	// Never hold removalMu across a channel send; a healthy file can occupy
 	// a worker for hours. Each job instead checks its generation at admission.
-	filesToDownload := p.queueTransferFiles(transfer, files, transferCtx)
+	localTransfer := *transfer
+	localTransfer.Name = transferCtx.Name
+	filesToDownload := p.queueTransferFiles(&localTransfer, files, transferCtx)
 	if filesToDownload == 0 {
 		log.Info("transfers").Str("name", transfer.Name).Int64("transfer_id", transfer.ID).
 			Msg("All files already exist, completing transfer")
@@ -526,21 +528,16 @@ func (p *TransferProcessor) prepareTransfer(transfer *putio.Transfer) ([]*putio.
 		return nil, nil
 	}
 
-	manifest, err := buildTransferFileManifest(transfer, files)
+	localTransfer, err := p.manager.prepareManifest(transfer, files)
 	if err != nil {
 		log.Error("transfers").
 			Int64("transfer_id", transfer.ID).
 			Err(err).
-			Msg("Failed to build transfer file manifest")
+			Msg("Failed to resolve transfer file manifest")
 		p.failInitializedTransfer(transfer.ID, err)
 		return nil, nil
 	}
-	if err := p.manager.transferFiles.Set(transfer.ID, manifest); err != nil {
-		log.Error("transfers").
-			Int64("transfer_id", transfer.ID).
-			Err(err).
-			Msg("Failed to persist transfer file manifest")
-		p.failInitializedTransfer(transfer.ID, err)
+	if !p.initializeTransfer(localTransfer, len(files)) {
 		return nil, nil
 	}
 
@@ -590,12 +587,12 @@ func buildTransferFileManifest(transfer *putio.Transfer, files []*putio.File) ([
 }
 
 func (p *TransferProcessor) restoreCleanedTransfer(transfer *putio.Transfer) {
-	files, err := p.manager.transferFiles.load(transfer.ID)
+	manifest, err := p.manager.GetTransferManifest(transfer, ManifestCheckComplete)
 	if err != nil {
 		p.failCleanedTransfer(transfer, err)
 		return
 	}
-	if len(files) == 0 {
+	if len(manifest.Files) == 0 {
 		// Source absence proves neither local completion nor file ownership.
 		if err := p.manager.markNeedsReview(transfer); err != nil {
 			log.Error("transfers").Int64("transfer_id", transfer.ID).Err(err).
@@ -604,13 +601,10 @@ func (p *TransferProcessor) restoreCleanedTransfer(transfer *putio.Transfer) {
 		return
 	}
 
-	if err := p.validateLocalTransferFiles(transfer, files); err != nil {
-		p.failCleanedTransfer(transfer, err)
-		return
-	}
 	// The root is already absent; restoration must not issue a fresh delete.
 	cleanedTransfer := *transfer
 	cleanedTransfer.FileID = 0
+	cleanedTransfer.Name = manifest.LocalRoot
 	if !p.initializeTransfer(&cleanedTransfer, 0) {
 		return
 	}
@@ -619,31 +613,6 @@ func (p *TransferProcessor) restoreCleanedTransfer(transfer *putio.Transfer) {
 
 func validRelativeTransferPath(path string) bool {
 	return path != "." && filepath.IsLocal(path)
-}
-
-func (p *TransferProcessor) validateLocalTransferFiles(transfer *putio.Transfer, files []TransferFile) error {
-	downloadDir := filepath.Join(p.targetDir, p.manager.localCategory(transfer.ID))
-	transferName := filepath.Clean(transfer.Name)
-	if !validRelativeTransferPath(transferName) || IsReservedTransferName(transferName) {
-		return fmt.Errorf("unsafe transfer name %q", transfer.Name)
-	}
-
-	for _, file := range files {
-		name := filepath.Clean(filepath.FromSlash(file.Name))
-		rel, err := filepath.Rel(transferName, name)
-		if err != nil || !validRelativeTransferPath(rel) {
-			return fmt.Errorf("manifest file %q escapes transfer directory", file.Name)
-		}
-		path := filepath.Join(downloadDir, name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("stat manifest file %q: %w", file.Name, err)
-		}
-		if !info.Mode().IsRegular() || info.Size() != file.Length {
-			return fmt.Errorf("manifest file %q does not match expected length %d", file.Name, file.Length)
-		}
-	}
-	return nil
 }
 
 func (p *TransferProcessor) failCleanedTransfer(transfer *putio.Transfer, err error) {

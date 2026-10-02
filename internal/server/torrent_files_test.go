@@ -63,91 +63,47 @@ func TestHandleTorrentGetSelectors(t *testing.T) {
 }
 
 func TestHandleTorrentGetReturnsExactManifest(t *testing.T) {
-	transfers := []*putio.Transfer{
+	root := t.TempDir()
+	// Equal remote names do not imply equal ownership.
+	writeManifestFixture(t, root, ".plundrio-files/101.json",
+		[]byte(`[{"name":"Same Book/one.m4b","length":3},{"name":"Same Book/disc-2/two.m4b","length":6}]`))
+	writeManifestFixture(t, root, ".plundrio-files/202.json", []byte(`[{"name":"Other Book/unrelated.m4b","length":10}]`))
+	writeManifestFixture(t, root, "Same Book/one.m4b", []byte("one"))
+	writeManifestFixture(t, root, "Same Book/disc-2/two.m4b", []byte("twotwo"))
+	writeManifestFixture(t, root, "Other Book/unrelated.m4b", []byte("unrelated!"))
+
+	cfg := &config.Config{TargetDir: root}
+	service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{
 		{ID: 101, Name: "Same Book", Status: "COMPLETED"},
 		{ID: 202, Name: "Same Book", Status: "COMPLETED"},
-	}
-	service := &torrentAddDownloadService{
-		transfers: transfers,
-		files: map[int64][]download.TransferFile{
-			101: {
-				{Name: "Same Book/one.m4b", Length: 3},
-				{Name: "Same Book/disc-2/two.m4b", Length: 6},
-			},
-			202: {{Name: "Same Book/unrelated.m4b", Length: 10}},
-		},
-	}
-	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, dlService: service}
+	}}
+	torrents := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"ids":[101],"fields":["id","name","files","error","errorString"]}`)
 
-	response, err := server.handleTorrentGet(context.Background(), json.RawMessage(`{"ids":[101],"fields":["id","files"]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded struct {
-		Torrents []struct {
-			ID    int64              `json:"id"`
-			Files []transmissionFile `json:"files"`
-		} `json:"torrents"`
-	}
-	decodeResponse(t, response, &decoded)
 	want := []transmissionFile{
 		{Length: 3, Name: "Same Book/one.m4b"},
 		{Length: 6, Name: "Same Book/disc-2/two.m4b"},
 	}
-	if len(decoded.Torrents) != 1 || decoded.Torrents[0].ID != 101 || !reflect.DeepEqual(decoded.Torrents[0].Files, want) {
-		t.Fatalf("torrents = %+v, want transfer 101 files %+v", decoded.Torrents, want)
+	if len(torrents) != 1 || torrents[0].ID != 101 || torrents[0].Error != 0 || !reflect.DeepEqual(torrents[0].Files, want) {
+		t.Fatalf("torrents = %+v, want transfer 101 files %+v", torrents, want)
 	}
 }
 
-func TestHandleTorrentGetIncludesTransfersWithoutManifest(t *testing.T) {
-	transfers := []*putio.Transfer{
-		{ID: 101, Name: "Downloading", Status: "COMPLETED"},
-		{ID: 202, Name: "Ready", Status: "COMPLETED"},
-	}
-	service := &torrentAddDownloadService{
-		transfers: transfers,
-		files: map[int64][]download.TransferFile{
-			202: {{Name: "Ready/book.m4b", Length: 10}},
-		},
-	}
-	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, dlService: service}
-
-	response, err := server.handleTorrentGet(context.Background(), json.RawMessage(`{"fields":["id","files"]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded struct {
-		Torrents []struct {
-			ID    int64              `json:"id"`
-			Files []transmissionFile `json:"files"`
-		} `json:"torrents"`
-	}
-	decodeResponse(t, response, &decoded)
-	if len(decoded.Torrents) != 2 {
-		t.Fatalf("torrents = %+v, want both transfers", decoded.Torrents)
-	}
-	if decoded.Torrents[0].ID != 101 || decoded.Torrents[0].Files == nil || len(decoded.Torrents[0].Files) != 0 {
-		t.Fatalf("pre-manifest transfer = %+v, want transfer 101 with an empty file list", decoded.Torrents[0])
-	}
-	if decoded.Torrents[1].ID != 202 || len(decoded.Torrents[1].Files) != 1 {
-		t.Fatalf("manifest-backed transfer = %+v, want transfer 202 with one file", decoded.Torrents[1])
-	}
-}
-
+// Arr derives a completed download's output path from downloadDir plus the
+// reported name, so the name must follow the persisted local root.
 func TestHandleTorrentGetRejectsUnsafeManifest(t *testing.T) {
-	transfer := &putio.Transfer{ID: 101, Name: "Book"}
-	service := &torrentAddDownloadService{
-		transfers: []*putio.Transfer{transfer},
-		files: map[int64][]download.TransferFile{
-			101: {{Name: "../outside.m4b", Length: 1}},
-		},
-	}
-	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, dlService: service}
-	if _, err := server.handleTorrentGet(context.Background(), json.RawMessage(`{"ids":[101],"fields":["files"]}`)); err == nil {
-		t.Fatal("expected unsafe manifest to fail")
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"../outside.m4b","length":1}]`))
+	cfg := &config.Config{TargetDir: root}
+	service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{{ID: 101, Name: "Book"}}}
+	torrents := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"ids":[101],"fields":["id","name","files","error","errorString"]}`)
+	if len(torrents) != 1 || torrents[0].Error != trErrorLocal || torrents[0].ErrorString == "" || torrents[0].Name != "Book" || torrents[0].Files == nil || len(torrents[0].Files) != 0 {
+		t.Fatalf("unsafe manifest was not reported as a local error: %+v", torrents)
 	}
 }
 
+// One unreadable competing record fails ownership closed for everybody. The
+// diagnostic must name the same blocking manifest on every read so it can be
+// resolved; see README "Corrupt manifest ownership".
 func TestHandleTorrentRemoveNumericID(t *testing.T) {
 	for _, tt := range []struct {
 		name             string
@@ -177,19 +133,19 @@ func TestHandleTorrentRemoveNumericID(t *testing.T) {
 }
 
 func TestHandleTorrentRemoveBoundsFailuresAndRetainsOwnership(t *testing.T) {
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"Book/book.m4b","length":10}]`))
+	writeManifestFixture(t, root, "books/Book/book.m4b", []byte("book.m4b!!"))
+	cfg := &config.Config{TargetDir: root, UseCategoriesTarget: true}
+	manager := download.New(cfg, nil)
+	manager.SetCategory(101, "books")
 	transfer := &putio.Transfer{ID: 101, Name: "Book", FileID: 501}
 	client := &torrentAddClient{
 		transfers:         []*putio.Transfer{transfer},
 		deleteTransferErr: errors.New("remote deletion failed"),
 	}
-	service := &torrentAddDownloadService{
-		categories: map[int64]string{101: "books"},
-		files: map[int64][]download.TransferFile{
-			101: {{Name: "Book/book.m4b", Length: 10}},
-		},
-		transfers: []*putio.Transfer{transfer},
-	}
-	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, client: client, dlService: service}
+	service := &manifestRPCService{Manager: manager, transfers: []*putio.Transfer{transfer}}
+	server := &Server{cfg: cfg, client: client, dlService: service}
 
 	if _, err := server.handleTorrentRemove(context.Background(), json.RawMessage(`{"ids":[101]}`)); err == nil {
 		t.Fatal("expected actionable remote deletion error")
@@ -197,40 +153,32 @@ func TestHandleTorrentRemoveBoundsFailuresAndRetainsOwnership(t *testing.T) {
 	if len(client.deleted) != 3 {
 		t.Fatalf("remote attempts = %d, want 3", len(client.deleted))
 	}
-
-	if len(service.removedTransfers) != 0 {
-		t.Fatalf("removed local transfers = %v, want none", service.removedTransfers)
-	}
-	if got := service.GetCategory(101); got != "books" {
+	if got := manager.GetCategory(101); got != "books" {
 		t.Fatalf("retained category = %q, want books", got)
 	}
-	if len(service.categories) != 0 || !service.RemovalPending(101) {
-		t.Fatal("failed removal retained active category tracking")
+	if !manager.RemovalPending(101) {
+		t.Fatal("failed removal discarded its durable marker")
 	}
-	if _, ok := service.files[101]; !ok {
+	if _, err := os.Stat(filepath.Join(root, ".plundrio-files", "101.json")); err != nil {
 		t.Fatal("durable manifest was discarded after remote deletion failed")
 	}
-	response, err := server.handleTorrentGet(context.Background(), json.RawMessage(`{"ids":[101]}`))
-	if err != nil {
-		t.Fatal(err)
+	torrents := manifestRPC(t, server, `{"ids":[101],"fields":["id","status","error","errorString"]}`)
+	if len(torrents) != 1 || torrents[0].Status != trStatusStopped || torrents[0].Error != trErrorLocal || torrents[0].ErrorString == "" {
+		t.Fatalf("pending removal not actionable: %+v", torrents)
 	}
-	var decoded struct {
-		Torrents []struct {
-			Status      int
-			Error       int
-			ErrorString string
-		}
-	}
-	decodeResponse(t, response, &decoded)
-	if len(decoded.Torrents) != 1 || decoded.Torrents[0].Status != trStatusStopped || decoded.Torrents[0].Error != trErrorLocal || decoded.Torrents[0].ErrorString == "" {
-		t.Fatalf("pending removal not actionable: %+v", decoded)
-	}
+
 	client.deleteTransferErr = nil
 	if _, err := server.handleTorrentRemove(context.Background(), json.RawMessage(`{"ids":[101]}`)); err != nil {
 		t.Fatal(err)
 	}
-	if service.RemovalPending(101) || len(service.files) != 0 {
+	if manager.RemovalPending(101) {
 		t.Fatal("successful retry retained removal state")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".plundrio-files", "101.json")); !os.IsNotExist(err) {
+		t.Fatal("successful retry retained the manifest")
+	}
+	if _, err := os.Stat(filepath.Join(root, "books", "Book", "book.m4b")); err != nil {
+		t.Fatalf("removal without delete-local-data touched local data: %v", err)
 	}
 }
 
