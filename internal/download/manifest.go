@@ -147,6 +147,27 @@ func (m *Manager) GetTransferManifest(transfer *putio.Transfer, check ManifestCh
 	return m.TransferFileReader().GetTransferManifest(transfer, check)
 }
 
+// restorationManifest reports the transfer's own persisted ownership when the
+// remote source is already gone. Absence of a record for this ID is reported as
+// an empty manifest, since nothing local is claimed and no deletion candidate
+// is involved; an unreadable state directory or a malformed record for this ID
+// is still an error. Records that exist are validated in full.
+func (m *Manager) restorationManifest(transfer *putio.Transfer) (LocalManifest, error) {
+	m.transferFiles.mu.RLock()
+	snapshot := m.readManifests()
+	m.transferFiles.mu.RUnlock()
+	if snapshot.scanErr != nil {
+		return LocalManifest{}, snapshot.scanErr
+	}
+	if err := snapshot.errors[transfer.ID]; err != nil {
+		return LocalManifest{}, err
+	}
+	if _, exists := snapshot.manifests[transfer.ID]; !exists {
+		return LocalManifest{}, nil
+	}
+	return snapshot.GetTransferManifest(transfer, ManifestCheckComplete)
+}
+
 // TransferFileReader keeps one ownership snapshot for a files-inclusive RPC,
 // avoiding a full disk scan for every torrent in the response.
 type TransferFileReader interface {
@@ -154,12 +175,12 @@ type TransferFileReader interface {
 }
 
 type manifestSnapshot struct {
-	targetDir  string
-	manifests  map[int64]LocalManifest
-	categories map[int64]string
-	claims     map[int64]manifestClaim
-	errors     map[int64]error
-	scanErr    error
+	targetDir string
+	manifests map[int64]LocalManifest
+	category  func(int64) (string, error)
+	claims    map[int64]manifestClaim
+	errors    map[int64]error
+	scanErr   error
 }
 
 // manifestClaim is every category-qualified root one stored record could own,
@@ -177,7 +198,7 @@ func (m *Manager) TransferFileReader() TransferFileReader {
 
 // Caller holds transferFiles.mu, including across publication of a new claim.
 func (m *Manager) readManifests() *manifestSnapshot {
-	snapshot := &manifestSnapshot{targetDir: m.cfg.TargetDir, manifests: make(map[int64]LocalManifest), categories: make(map[int64]string), claims: make(map[int64]manifestClaim), errors: make(map[int64]error)}
+	snapshot := &manifestSnapshot{targetDir: m.cfg.TargetDir, manifests: make(map[int64]LocalManifest), category: m.localCategory, claims: make(map[int64]manifestClaim), errors: make(map[int64]error)}
 	root, err := os.OpenRoot(m.cfg.TargetDir)
 	if os.IsNotExist(err) {
 		return snapshot
@@ -214,17 +235,20 @@ func (m *Manager) readManifests() *manifestSnapshot {
 		if err != nil || id <= 0 || entry.Name() != strconv.FormatInt(id, 10)+".json" {
 			continue
 		}
-		snapshot.categories[id] = m.localCategory(id)
 		manifest, err := m.transferFiles.loadManifest(id)
 		if err != nil {
 			snapshot.errors[id] = err
-			snapshot.claims[id] = manifestClaim{err: fmt.Errorf("manifest %d: %w", id, err)}
+			if !m.confirmedAbsent(id) {
+				snapshot.claims[id] = manifestClaim{err: fmt.Errorf("manifest %d: %w", id, err)}
+			}
 			continue
 		}
 		if _, err := manifest.validate(); err != nil {
 			snapshot.errors[id] = err
 			roots := manifest.possibleRoots()
-			snapshot.claims[id] = snapshot.resolveClaim(id, roots, fmt.Errorf("manifest %d: %w", id, err))
+			if roots != nil || !m.confirmedAbsent(id) {
+				snapshot.claims[id] = snapshot.resolveClaim(id, roots, fmt.Errorf("manifest %d: %w", id, err))
+			}
 			continue
 		}
 		snapshot.manifests[id] = manifest
@@ -236,12 +260,16 @@ func (m *Manager) readManifests() *manifestSnapshot {
 }
 
 // resolveClaim qualifies roots with the record's category. No roots means the
-// record's area is unknown, so unknownErr conservatively blocks other claims.
+// record's area is unknown, so unknownErr then blocks every transfer unless a
+// successful account-wide listing confirmed the record's transfer is gone.
 func (s *manifestSnapshot) resolveClaim(id int64, roots []string, unknownErr error) manifestClaim {
 	if len(roots) == 0 {
 		return manifestClaim{err: unknownErr}
 	}
-	category := s.categories[id]
+	category, err := s.category(id)
+	if err != nil {
+		return manifestClaim{err: fmt.Errorf("category for manifest %d: %w", id, err)}
+	}
 	if category != "" && !safeManifestPath(category) {
 		return manifestClaim{err: fmt.Errorf("unsafe category for manifest %d", id)}
 	}
@@ -286,25 +314,53 @@ func (s *manifestSnapshot) GetTransferManifest(transfer *putio.Transfer, check M
 	return s.validateManifest(transfer, manifest, check)
 }
 
+// deletionCandidate is the directory a manifest-less removal would delete: the
+// transfer's remote name resolved under the download root, exactly as
+// deleteLocalData resolves it. A name that cannot land there is refused rather
+// than passed through, so ownership never reads clean for a name nothing can
+// establish a boundary for.
+func (s *manifestSnapshot) deletionCandidate(name string) (string, error) {
+	rel, err := filepath.Rel(s.targetDir, filepath.Join(s.targetDir, filepath.FromSlash(name)))
+	if err != nil || !safeManifestPath(rel) || IsReservedTransferName(strings.Split(rel, string(filepath.Separator))[0]) {
+		return "", fmt.Errorf("unsafe transfer name %q", name)
+	}
+	return rel, nil
+}
+
 func (s *manifestSnapshot) validateManifest(transfer *putio.Transfer, manifest LocalManifest, check ManifestCheck) (LocalManifest, error) {
 	if s.scanErr != nil {
 		return manifest, s.scanErr
 	}
 	claim := manifest.claimedRoot()
 	manifest, err := manifest.resolve()
-	if err != nil || len(manifest.Files) == 0 {
+	if err != nil {
 		return manifest, err
 	}
-	category := s.categories[transfer.ID]
+	category, err := s.category(transfer.ID)
+	if err != nil {
+		return manifest, fmt.Errorf("cannot establish ownership: category for transfer %d: %w", transfer.ID, err)
+	}
 	if category != "" && !safeManifestPath(category) {
 		return manifest, fmt.Errorf("unsafe manifest category %q", category)
 	}
+	owned := len(manifest.Files) > 0
 	localRoot := filepath.Join(category, manifest.LocalRoot)
+	// A transfer without a manifest owns nothing, yet removal still falls back
+	// to deleting the directory its remote name points at. That candidate is
+	// not ownership evidence, so it must clear every other record's claim and
+	// the same confinement and symlink checks before it can be used.
+	if !owned {
+		candidate, err := s.deletionCandidate(transfer.Name)
+		if err != nil {
+			return manifest, err
+		}
+		claim, localRoot = candidate, filepath.Join(category, candidate)
+	}
 	if err := s.checkManifestCollision(transfer.ID, filepath.Join(category, claim)); err != nil {
 		return manifest, err
 	}
 	root, err := os.OpenRoot(s.targetDir)
-	if os.IsNotExist(err) && (check != ManifestCheckComplete && manifest.LocalRoot == transfer.Name) {
+	if os.IsNotExist(err) && (!owned || (check == ManifestCheckPending && manifest.LocalRoot == transfer.Name)) {
 		return manifest, nil // The ordinary first download creates the target.
 	}
 	if err != nil {
@@ -314,8 +370,8 @@ func (s *manifestSnapshot) validateManifest(transfer *putio.Transfer, manifest L
 	// An unchanged-name transfer may not have created its root yet, and an
 	// importer may have moved the finished payload out and removed it again.
 	// A pending download after name drift requires the root; never create a
-	// replacement for it. Processed metadata remains usable after import.
-	rootRequired := check == ManifestCheckComplete || (check == ManifestCheckPending && manifest.LocalRoot != transfer.Name)
+	// replacement for it. A processed root that is gone has nothing to delete.
+	rootRequired := owned && (check == ManifestCheckComplete || (check == ManifestCheckPending && manifest.LocalRoot != transfer.Name))
 	if err := checkManifestPath(root, localRoot, true, rootRequired, 0, check); err != nil {
 		return manifest, err
 	}
@@ -397,6 +453,21 @@ func sortedManifestIDs[V any](m map[int64]V) []int64 {
 	return ids
 }
 
+// ManifestLocalRoot reports the local root one transfer's persisted manifest
+// owns. Reconciliation needs it to keep a transfer whose remote name has
+// drifted from being classified as unmanaged local data. Unreadable ownership
+// evidence fails closed rather than silently shrinking the protected set.
+func ManifestLocalRoot(targetDir string, transfer *putio.Transfer) (string, error) {
+	manifest, err := newTransferFileStore(targetDir).loadManifest(transfer.ID)
+	if err == nil {
+		manifest, err = manifest.resolve()
+	}
+	if err != nil {
+		return "", fmt.Errorf("manifest ownership for transfer %d: %w", transfer.ID, err)
+	}
+	return manifest.LocalRoot, nil
+}
+
 // prepareManifest retains an existing claim across retries/restarts. A changed
 // remote file list is not permission to overwrite local ownership evidence.
 func (m *Manager) prepareManifest(transfer *putio.Transfer, files []*putio.File) (*putio.Transfer, error) {
@@ -408,7 +479,6 @@ func (m *Manager) prepareManifest(transfer *putio.Transfer, files []*putio.File)
 	}
 	local := *transfer
 	snapshot := m.readManifests()
-	snapshot.categories[transfer.ID] = m.localCategory(transfer.ID)
 	if len(stored.Files) > 0 {
 		manifest, err := snapshot.validateManifest(transfer, stored, ManifestCheckPending)
 		if err != nil {

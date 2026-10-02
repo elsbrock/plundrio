@@ -136,14 +136,6 @@ func (fs *TransferFileStore) loadManifest(transferID int64) (LocalManifest, erro
 	return manifest, nil
 }
 
-// Get returns persisted files for pending-removal protection.
-func (fs *TransferFileStore) Get(id int64) ([]TransferFile, bool) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	manifest, err := fs.loadManifest(id)
-	return manifest.Files, err == nil && len(manifest.Files) > 0
-}
-
 // Remove deletes a transfer's manifest after the Transmission client removes it.
 func (fs *TransferFileStore) Remove(transferID int64) error {
 	fs.mu.Lock()

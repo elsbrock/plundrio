@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -79,11 +80,11 @@ func PendingRemovalPaths(targetDir string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pending removal %d: %w", id, err)
 		}
-		files, ok := store.Get(id)
-		if !ok {
+		manifest, err := store.loadManifest(id)
+		if err != nil || len(manifest.Files) == 0 {
 			return nil, fmt.Errorf("pending removal %d has no readable authoritative manifest; resolve the pending removal before reconciliation", id)
 		}
-		for _, file := range files {
+		for _, file := range manifest.Files {
 			name := filepath.FromSlash(file.Name)
 			if !filepath.IsLocal(name) || filepath.Clean(name) != name || file.Length < 0 {
 				return nil, fmt.Errorf("pending removal %d has invalid manifest path %q", id, file.Name)
@@ -209,4 +210,69 @@ func (m *Manager) pruneRemovals(pending []int64, transfers []*putio.Transfer) {
 			m.RemoveTransfer(id)
 		}
 	}
+}
+
+// staleManifests snapshots ownership BEFORE fetching the full remote list, for
+// the same reason pendingRemovals does.
+func (m *Manager) staleManifests() *manifestSnapshot {
+	m.transferFiles.mu.RLock()
+	defer m.transferFiles.mu.RUnlock()
+	return m.readManifests()
+}
+
+// pruneStaleManifests reclaims a manifest whose transfer is absent from a
+// successful account-wide listing once its root collides with a listed
+// transfer that is not held for review, so a re-grab of the same release is not refused forever. Local
+// files are never touched; only the ownership record is released.
+func (m *Manager) pruneStaleManifests(snapshot *manifestSnapshot, transfers []*putio.Transfer) {
+	present := make(map[int64]bool, len(transfers))
+	var roots []string
+	for _, transfer := range transfers {
+		present[transfer.ID] = true
+		if m.NeedsReview(transfer.ID) {
+			continue
+		}
+		if claim, ok := snapshot.claims[transfer.ID]; ok {
+			roots = append(roots, claim.roots...)
+			continue
+		}
+		candidate, err := snapshot.deletionCandidate(transfer.Name)
+		if err != nil {
+			continue
+		}
+		if category, err := snapshot.category(transfer.ID); err == nil {
+			roots = append(roots, filepath.Join(category, candidate))
+		}
+	}
+	for _, id := range sortedManifestIDs(snapshot.manifests) {
+		if present[id] || m.NeedsReview(id) || m.activeFileCount(id) > 0 {
+			continue
+		}
+		if slices.ContainsFunc(snapshot.claims[id].roots, func(stale string) bool {
+			return slices.ContainsFunc(roots, func(root string) bool { return rootsOverlap(stale, root) })
+		}) {
+			log.Warn("transfers").Int64("transfer_id", id).
+				Msg("Reclaiming manifest of a transfer absent from Put.io whose root collides with a listed transfer")
+			m.RemoveTransfer(id)
+			m.categories.Remove(id)
+		}
+	}
+}
+
+func (m *Manager) recordListing(transfers []*putio.Transfer) {
+	listed := make(map[int64]bool, len(transfers))
+	for _, transfer := range transfers {
+		listed[transfer.ID] = true
+	}
+	m.listedMu.Lock()
+	m.listed = listed
+	m.listedMu.Unlock()
+}
+
+// confirmedAbsent reports whether the latest account-wide listing succeeded
+// and lacked id. Before a listing or after a failed fetch nothing is confirmed.
+func (m *Manager) confirmedAbsent(id int64) bool {
+	m.listedMu.RLock()
+	defer m.listedMu.RUnlock()
+	return m.listed != nil && !m.listed[id]
 }

@@ -370,8 +370,9 @@ func TestLocalCategory_GatedByTargetFlag(t *testing.T) {
 			m := New(cfg, &fakePutioClient{})
 			m.SetCategory(42, "tv")
 
-			if got := m.localCategory(42); got != tt.want {
-				t.Errorf("localCategory(42) = %q, want %q", got, tt.want)
+			got, err := m.localCategory(42)
+			if err != nil || got != tt.want {
+				t.Errorf("localCategory(42) = %q, %v, want %q", got, err, tt.want)
 			}
 		})
 	}

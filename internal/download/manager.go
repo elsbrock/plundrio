@@ -39,6 +39,9 @@ type Manager struct {
 	downloadRetryAttempts sync.Map             // map[int64]int - bounded local retry rounds by FileID
 	downloadRetryDelay    func(int) (time.Duration, bool)
 
+	listedMu sync.RWMutex   // guards listed
+	listed   map[int64]bool // IDs in the latest account-wide listing; nil before one or after a failure
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -89,12 +92,22 @@ func (m *Manager) SetCategory(transferID int64, category string) {
 }
 
 // GetCategory returns the category for a put.io transfer ID, or "" if none.
+// It reports the stored category for display only; callers that resolve a
+// local path must use storedCategory so unreadable ownership evidence is an
+// error rather than the download root.
 func (m *Manager) GetCategory(transferID int64) string {
+	category, _ := m.storedCategory(transferID)
+	return category
+}
+
+// storedCategory reads the single durable record of a transfer's category: the
+// in-memory store, or the removal marker that holds it once the transfer is
+// released for deletion.
+func (m *Manager) storedCategory(transferID int64) (string, error) {
 	if m.RemovalPending(transferID) {
-		category, _ := m.removalCategory(transferID)
-		return category
+		return m.removalCategory(transferID)
 	}
-	return m.categories.Get(transferID)
+	return m.categories.Get(transferID), nil
 }
 
 // RemoveCategory deletes the stored category for a put.io transfer ID.
@@ -104,11 +117,11 @@ func (m *Manager) RemoveCategory(transferID int64) {
 
 // localCategory returns the category subfolder to use for a transfer's local
 // path, or "" when local categorization is disabled.
-func (m *Manager) localCategory(transferID int64) string {
+func (m *Manager) localCategory(transferID int64) (string, error) {
 	if !m.cfg.UseCategoriesTarget {
-		return ""
+		return "", nil
 	}
-	return m.GetCategory(transferID)
+	return m.storedCategory(transferID)
 }
 
 // RemoveTransfer stops tracking a transfer and drops its local bookkeeping.

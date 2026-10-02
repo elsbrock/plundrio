@@ -48,7 +48,7 @@ func TestReconcileReservesInternalState(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			mustMkdir(t, filepath.Join(root, name))
-			mustWrite(t, filepath.Join(root, name, "1.json"), "{}")
+			mustWrite(t, filepath.Join(root, name, "1.json"), `[{"name":"root/file.mkv","length":1}]`)
 			service := New(&fakeClient{}, 1, root, false)
 			report, err := service.Reconcile(context.Background())
 			if err != nil {

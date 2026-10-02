@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/elsbrock/go-putio"
@@ -90,6 +92,110 @@ func TestHandleTorrentGetReturnsExactManifest(t *testing.T) {
 
 // Arr derives a completed download's output path from downloadDir plus the
 // reported name, so the name must follow the persisted local root.
+func TestHandleTorrentGetReportsLocalRootAfterNameDrift(t *testing.T) {
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/101.json",
+		[]byte(`[{"name":"old-root/book/file.epub","length":4},{"name":"old-root/cover.jpg","length":3}]`))
+	writeManifestFixture(t, root, "old-root/book/file.epub", []byte("book"))
+	writeManifestFixture(t, root, "old-root/cover.jpg", []byte("art"))
+	cfg := &config.Config{TargetDir: root}
+	service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{
+		{ID: 101, Name: "new-root", Status: "COMPLETED", PercentDone: 100, Size: 7},
+	}}
+	srv := &Server{cfg: cfg, dlService: service}
+
+	for _, fields := range []string{`["id","name"]`, `["id","name","files"]`} {
+		torrents := manifestRPC(t, srv, `{"ids":[101],"fields":`+fields+`}`)
+		if len(torrents) != 1 || torrents[0].Name != "old-root" {
+			t.Fatalf("fields %s reported drifted name: %+v", fields, torrents)
+		}
+	}
+}
+
+// An already-processed transfer keeps its historical metadata after Arr has
+// imported, renamed or hardlinked the payload out of the download directory.
+func TestHandleTorrentGetKeepsProcessedMetadataAfterImport(t *testing.T) {
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"Book/book.m4b","length":10}]`))
+	if err := os.MkdirAll(filepath.Join(root, "Book"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{TargetDir: root}
+	transfer := &putio.Transfer{ID: 101, Name: "Book", Status: "SEEDING", PercentDone: 100, Size: 10}
+	service := &manifestRPCService{
+		Manager:   download.New(cfg, nil),
+		transfers: []*putio.Transfer{transfer},
+		contexts: map[int64]*download.TransferContext{
+			101: download.NewTransferContext(101, 0, download.TransferLifecycleProcessed),
+		},
+	}
+
+	torrents := manifestRPC(t, &Server{cfg: cfg, dlService: service},
+		`{"ids":[101],"fields":["id","name","files","error","errorString","status","seedIdleMode"]}`)
+	if len(torrents) != 1 || torrents[0].Error != 0 || torrents[0].Name != "Book" ||
+		len(torrents[0].Files) != 1 || torrents[0].Files[0].Name != "Book/book.m4b" ||
+		torrents[0].SeedIdleMode != transmissionLimitModeSingle {
+		t.Fatalf("processed transfer lost removal eligibility after import: %+v", torrents)
+	}
+
+	// Importers that move the last child out may remove the root with it. While
+	// this instance still tracks the transfer as processed and its remote name
+	// has not drifted, that is a completed import, not lost ownership.
+	if err := os.Remove(filepath.Join(root, "Book")); err != nil {
+		t.Fatal(err)
+	}
+	torrents = manifestRPC(t, &Server{cfg: cfg, dlService: service},
+		`{"ids":[101],"fields":["id","name","files","error","errorString"]}`)
+	if len(torrents) != 1 || torrents[0].Error != 0 || torrents[0].Name != "Book" ||
+		len(torrents[0].Files) != 1 || torrents[0].Files[0].Name != "Book/book.m4b" {
+		t.Fatalf("imported-away root dropped historical metadata: %+v", torrents)
+	}
+
+	// A later remote rename changes nothing about that completed import: the
+	// stored root is still reported and no substitute root is created. A
+	// restarted instance that no longer tracks the transfer must not report
+	// completion it cannot see.
+	transfer.Name = "Renamed Book"
+	torrents = manifestRPC(t, &Server{cfg: cfg, dlService: service},
+		`{"ids":[101],"fields":["id","name","files","error","errorString"]}`)
+	if len(torrents) != 1 || torrents[0].Error != 0 || torrents[0].Name != "Book" ||
+		len(torrents[0].Files) != 1 || torrents[0].Files[0].Name != "Book/book.m4b" {
+		t.Fatalf("drifted name dropped imported-away historical metadata: %+v", torrents)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "Renamed Book")); !os.IsNotExist(err) {
+		t.Fatalf("drifted name created a substitute root: %v", err)
+	}
+	transfer.Name = "Book"
+	restarted := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{transfer}}
+	torrents = manifestRPC(t, &Server{cfg: cfg, dlService: restarted},
+		`{"ids":[101],"fields":["id","name","files","error","errorString","status","seedIdleMode","percentDone"]}`)
+	if len(torrents) != 1 || torrents[0].PercentDone >= 1 || torrents[0].Status == trStatusSeed ||
+		torrents[0].SeedIdleMode != transmissionLimitModeUnlimited {
+		t.Fatalf("restart reported local completion it cannot see: %+v", torrents)
+	}
+}
+
+func TestHandleTorrentGetIncludesTransfersWithoutManifest(t *testing.T) {
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/202.json", []byte(`[{"name":"Ready/book.m4b","length":10}]`))
+	cfg := &config.Config{TargetDir: root}
+	service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{
+		{ID: 101, Name: "Downloading", Status: "COMPLETED"},
+		{ID: 202, Name: "Ready", Status: "COMPLETED"},
+	}}
+	torrents := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":["id","name","files","error","errorString"]}`)
+
+	if len(torrents) != 2 {
+		t.Fatalf("torrents = %+v, want both transfers", torrents)
+	}
+	if torrents[0].ID != 101 || torrents[0].Name != "Downloading" || torrents[0].Error != 0 || torrents[0].Files == nil || len(torrents[0].Files) != 0 {
+		t.Fatalf("pre-manifest transfer = %+v, want transfer 101 with an empty file list", torrents[0])
+	}
+	if torrents[1].ID != 202 || len(torrents[1].Files) != 1 {
+		t.Fatalf("manifest-backed transfer = %+v, want transfer 202 with one file", torrents[1])
+	}
+}
+
 func TestHandleTorrentGetRejectsUnsafeManifest(t *testing.T) {
 	root := t.TempDir()
 	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"../outside.m4b","length":1}]`))
@@ -104,6 +210,24 @@ func TestHandleTorrentGetRejectsUnsafeManifest(t *testing.T) {
 // One unreadable competing record fails ownership closed for everybody. The
 // diagnostic must name the same blocking manifest on every read so it can be
 // resolved; see README "Corrupt manifest ownership".
+func TestHandleTorrentGetNamesLowestCorruptManifest(t *testing.T) {
+	root := t.TempDir()
+	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"Book/book.m4b","length":4}]`))
+	writeManifestFixture(t, root, "Book/book.m4b", []byte("book"))
+	for _, id := range []int64{303, 202, 404} {
+		writeManifestFixture(t, root, fmt.Sprintf(".plundrio-files/%d.json", id), []byte(`{`))
+	}
+	cfg := &config.Config{TargetDir: root}
+	service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{{ID: 101, Name: "Book"}}}
+	srv := &Server{cfg: cfg, dlService: service}
+	for i := 0; i < 5; i++ {
+		torrents := manifestRPC(t, srv, `{"ids":[101],"fields":["id","files","error","errorString"]}`)
+		if len(torrents) != 1 || torrents[0].Error != trErrorLocal || !strings.Contains(torrents[0].ErrorString, "manifest 202:") {
+			t.Fatalf("read %d reported %+v, want the lowest corrupt manifest ID", i, torrents)
+		}
+	}
+}
+
 func TestHandleTorrentRemoveNumericID(t *testing.T) {
 	for _, tt := range []struct {
 		name             string

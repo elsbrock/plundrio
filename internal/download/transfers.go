@@ -98,12 +98,18 @@ func (p *TransferProcessor) checkTransfers() {
 	log.Debug("transfers").Msg("Checking transfers")
 
 	pending := p.manager.pendingRemovals()
+	stale := p.manager.staleManifests()
 	transfers, err := p.manager.client.GetTransfers(p.manager.Context())
 	if err != nil {
+		p.manager.listedMu.Lock()
+		p.manager.listed = nil // Failed listings cannot confirm a corrupt record's owner is absent.
+		p.manager.listedMu.Unlock()
 		log.Error("transfers").Err(err).Msg("Failed to get transfers")
 		return
 	}
+	p.manager.recordListing(transfers)
 	p.manager.pruneRemovals(pending, transfers)
+	p.manager.pruneStaleManifests(stale, transfers)
 
 	log.Debug("transfers").
 		Int("api_transfers_count", len(transfers)).
@@ -450,7 +456,11 @@ func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 	// a worker for hours. Each job instead checks its generation at admission.
 	localTransfer := *transfer
 	localTransfer.Name = transferCtx.Name
-	filesToDownload := p.queueTransferFiles(&localTransfer, files, transferCtx)
+	filesToDownload, err := p.queueTransferFiles(&localTransfer, files, transferCtx)
+	if err != nil {
+		p.failInitializedTransfer(transfer.ID, err)
+		return
+	}
 	if filesToDownload == 0 {
 		log.Info("transfers").Str("name", transfer.Name).Int64("transfer_id", transfer.ID).
 			Msg("All files already exist, completing transfer")
@@ -587,7 +597,7 @@ func buildTransferFileManifest(transfer *putio.Transfer, files []*putio.File) ([
 }
 
 func (p *TransferProcessor) restoreCleanedTransfer(transfer *putio.Transfer) {
-	manifest, err := p.manager.GetTransferManifest(transfer, ManifestCheckComplete)
+	manifest, err := p.manager.restorationManifest(transfer)
 	if err != nil {
 		p.failCleanedTransfer(transfer, err)
 		return
@@ -659,7 +669,11 @@ func isPutioNotFound(err error) bool {
 }
 
 // queueTransferFiles processes files in a transfer and queues them for download
-func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files []*putio.File, ctx *TransferContext) int {
+func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files []*putio.File, ctx *TransferContext) (int, error) {
+	category, err := p.manager.localCategory(transfer.ID)
+	if err != nil {
+		return 0, err
+	}
 	filesToDownload := 0
 
 	// Calculate total size of all files
@@ -678,9 +692,9 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 		Msg("Updated transfer with total file size")
 
 	for _, file := range files {
-		if p.shouldDownloadFile(transfer, file) {
+		if p.shouldDownloadFile(transfer, category, file) {
 			filesToDownload++
-			p.queueFileDownload(transfer, file, ctx)
+			p.queueFileDownload(transfer, category, file, ctx)
 		} else {
 			// For files we don't need to download (already exist), mark as completed
 			if err := p.manager.coordinator.FileCompleted(transfer.ID); err != nil {
@@ -701,12 +715,11 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 				Msg("Added existing file size to downloaded total")
 		}
 	}
-	return filesToDownload
+	return filesToDownload, nil
 }
 
 // shouldDownloadFile determines if a file needs to be downloaded
-func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *putio.File) bool {
-	category := p.manager.localCategory(transfer.ID)
+func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, category string, file *putio.File) bool {
 	targetPath := filepath.Join(p.targetDir, category, transfer.Name, file.Name)
 	info, err := os.Stat(targetPath)
 
@@ -732,8 +745,7 @@ func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *p
 }
 
 // queueFileDownload adds a file to the download queue
-func (p *TransferProcessor) queueFileDownload(transfer *putio.Transfer, file *putio.File, ctx *TransferContext) {
-	category := p.manager.localCategory(transfer.ID)
+func (p *TransferProcessor) queueFileDownload(transfer *putio.Transfer, category string, file *putio.File, ctx *TransferContext) {
 	p.manager.queueDownload(downloadJob{
 		FileID:     file.ID,
 		Name:       filepath.Join(category, transfer.Name, file.Name),
