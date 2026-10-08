@@ -588,3 +588,10 @@ Please open an issue first to discuss what you would like to change for major fe
 ## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+### Transfer name changes
+
+A saved file manifest stays with its numeric Put.io transfer ID when the remote
+name changes. Plundrio keeps the original local name and paths without rewriting
+the manifest or moving files; ambiguous roots and ownership conflicts are refused.
+Regression: `go test ./internal/server -run 'ManifestNameDrift' -count=1 -v`.

@@ -225,7 +225,7 @@ func TestRemovalInvalidatesBlockedRemoteListing(t *testing.T) {
 	if _, ok := m.GetTransferContext(101); ok {
 		t.Fatal("old listing recreated removed transfer")
 	}
-	if _, ok := m.GetTransferFiles(101); ok {
+	if manifest, err := m.transferFiles.loadManifest(101); err != nil || len(manifest.Files) != 0 {
 		t.Fatal("old listing recreated manifest")
 	}
 	if len(m.jobs) != 0 || m.activeFileCount(101) != 0 {

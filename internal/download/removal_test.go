@@ -17,7 +17,7 @@ func TestRemovalReleasesMemoryAndSuppressesRestart(t *testing.T) {
 	m.coordinator.InitiateTransfer(101, "Book", 501, 1)
 	m.processor.retryAttempts.Store(int64(101), 2)
 	m.processor.reprocessAttempts.Store(int64(101), 2)
-	if err := m.transferFiles.Set(101, []TransferFile{{Name: "Book/book.m4b", Length: 10}}); err != nil {
+	if err := m.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "Book", Files: []TransferFile{{Name: "Book/book.m4b", Length: 10}}}); err != nil {
 		t.Fatal(err)
 	}
 	if category, err := m.PrepareRemoval(101, false); err != nil || category != "books" {
@@ -38,7 +38,7 @@ func TestRemovalReleasesMemoryAndSuppressesRestart(t *testing.T) {
 	if m.GetCategory(101) != "books" {
 		t.Fatal("authoritative category lost")
 	}
-	if _, ok := m.GetTransferFiles(101); !ok {
+	if manifest, err := m.transferFiles.loadManifest(101); err != nil || len(manifest.Files) == 0 {
 		t.Fatal("manifest lost")
 	}
 
@@ -69,7 +69,7 @@ func TestRemovalPrunesOnlyAfterSuccessfulFullListing(t *testing.T) {
 	var listErr error
 	client := &fakeClient{transfers: func() ([]*putio.Transfer, error) { return transfers, listErr }}
 	m := newManagerForTest(t, client)
-	if err := m.transferFiles.Set(101, []TransferFile{{Name: "Book/book.m4b", Length: 10}}); err != nil {
+	if err := m.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "Book", Files: []TransferFile{{Name: "Book/book.m4b", Length: 10}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.PrepareRemoval(101, false); err != nil {
@@ -91,7 +91,7 @@ func TestRemovalPrunesOnlyAfterSuccessfulFullListing(t *testing.T) {
 	if m.RemovalPending(101) {
 		t.Fatal("confirmed remote absence retained marker")
 	}
-	if _, ok := m.GetTransferFiles(101); ok {
+	if manifest, err := m.transferFiles.loadManifest(101); err != nil || len(manifest.Files) != 0 {
 		t.Fatal("confirmed remote absence retained manifest")
 	}
 }
@@ -101,7 +101,7 @@ func TestRemovalKeepsSuppressionUntilActiveWorkerDrains(t *testing.T) {
 	m := newManagerForTest(t, &fakeClient{deletedFiles: deleted})
 	m.coordinator.InitiateTransfer(101, "Book", 501, 1)
 	m.activeFiles.Store(int64(501), int64(101))
-	if err := m.transferFiles.Set(101, []TransferFile{{Name: "Book/book.m4b", Length: 10}}); err != nil {
+	if err := m.transferFiles.setManifest(LocalManifest{TransferID: 101, LocalRoot: "Book", Files: []TransferFile{{Name: "Book/book.m4b", Length: 10}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.PrepareRemoval(101, false); err != nil {

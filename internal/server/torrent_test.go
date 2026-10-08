@@ -76,7 +76,6 @@ func (c *torrentAddClient) DeleteTransfer(_ context.Context, transferID int64) e
 
 type torrentAddDownloadService struct {
 	categories       map[int64]string
-	files            map[int64][]download.TransferFile
 	transfers        []*putio.Transfer
 	removedTransfers []int64
 	pending          map[int64]string
@@ -92,10 +91,11 @@ func (s *torrentAddDownloadService) GetTransferContext(transferID int64) (*downl
 	return ctx, ok
 }
 
-func (s *torrentAddDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, bool) {
-	files, ok := s.files[transferID]
-	return files, ok
+func (s *torrentAddDownloadService) GetTransferManifest(transfer *putio.Transfer, _ download.ManifestCheck) (download.LocalManifest, error) {
+	return download.LocalManifest{TransferID: transfer.ID}, nil
 }
+
+func (s *torrentAddDownloadService) TransferFileReader() download.TransferFileReader { return s }
 
 func (s *torrentAddDownloadService) SetCategory(transferID int64, category string) {
 	if s.categories == nil {
@@ -136,7 +136,6 @@ func (s *torrentAddDownloadService) RemoveCategory(transferID int64) {
 
 func (s *torrentAddDownloadService) RemoveTransfer(transferID int64) {
 	s.removedTransfers = append(s.removedTransfers, transferID)
-	delete(s.files, transferID)
 	delete(s.pending, transferID)
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/elsbrock/go-putio"
@@ -155,4 +156,74 @@ func localUnmanagedObject(t *testing.T, service *Service, objectPath string) Obj
 	}
 	t.Fatalf("local unmanaged object %q not found", objectPath)
 	return Object{}
+}
+
+// A transfer whose remote name drifted still owns its original local root.
+func TestReconcileProtectsManifestRootAfterRemoteNameDrift(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "tv", "old-root"))
+	mustWrite(t, filepath.Join(root, "tv", "old-root", "episode.mkv"), "active")
+	mustWrite(t, filepath.Join(root, download.CategoryStateFileName), `{"10":"tv"}`)
+	mustMkdir(t, filepath.Join(root, ".plundrio-files"))
+	mustWrite(t, filepath.Join(root, ".plundrio-files", "10.json"), `[{"name":"old-root/episode.mkv","length":6}]`)
+
+	client := &fakeClient{
+		transfers: []*putio.Transfer{{ID: 10, Name: "new-root", SaveParentID: 1}},
+		files:     map[int64][]*putio.File{},
+	}
+
+	report, err := New(client, 1, root, true).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Unmanaged) != 0 {
+		t.Fatalf("owned local root reported unmanaged after name drift: %+v", report.Unmanaged)
+	}
+	if got, want := objectLabels(report.Active), []string{"local:tv/old-root"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("active objects = %v, want %v", got, want)
+	}
+}
+
+// Ownership evidence protects local data only while the account still lists the
+// transfer: a manifest left behind by a deleted transfer must not hide its
+// orphaned files from the unmanaged report.
+func TestReconcileReportsOrphanedManifestRoot(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "old-root"))
+	mustWrite(t, filepath.Join(root, "old-root", "episode.mkv"), "orphan")
+	mustMkdir(t, filepath.Join(root, ".plundrio-files"))
+	mustWrite(t, filepath.Join(root, ".plundrio-files", "10.json"), `[{"name":"old-root/episode.mkv","length":6}]`)
+
+	client := &fakeClient{transfers: []*putio.Transfer{}, files: map[int64][]*putio.File{}}
+	service := New(client, 1, root, false)
+	if object := localUnmanagedObject(t, service, "old-root"); object.Path != "old-root" {
+		t.Fatalf("orphaned manifest root = %+v", object)
+	}
+	report, err := service.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Active) != 0 {
+		t.Fatalf("orphaned manifest still protected local data: %v", objectLabels(report.Active))
+	}
+}
+
+// An unreadable ownership record cannot be excluded from the protected set, so
+// reconciliation refuses instead of reporting an owned root as unmanaged.
+func TestReconcileRefusesCorruptManifestOwnership(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "old-root"))
+	mustWrite(t, filepath.Join(root, "old-root", "episode.mkv"), "active")
+	mustMkdir(t, filepath.Join(root, ".plundrio-files"))
+	mustWrite(t, filepath.Join(root, ".plundrio-files", "10.json"), `{`)
+
+	client := &fakeClient{
+		transfers: []*putio.Transfer{{ID: 10, Name: "new-root", SaveParentID: 1}},
+		files:     map[int64][]*putio.File{},
+	}
+
+	report, err := New(client, 1, root, false).Reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "manifest ownership for transfer 10") {
+		t.Fatalf("corrupt ownership record did not refuse: err = %v, report = %+v", err, report)
+	}
 }
