@@ -58,6 +58,14 @@ type Server struct {
 	// don't create duplicate folders or re-list put.io on every request.
 	catFolderMu sync.Mutex
 	catFolders  map[string]int64
+
+	// now returns the current time. Tests replace it. A nil value means time.Now.
+	now func() time.Time
+
+	// seedingTimeoutLogged holds the IDs of transfers for which plundrio already
+	// logged that the keep-seeding time limit passed. torrent-get runs often, so
+	// this map keeps the log to one line per transfer.
+	seedingTimeoutLogged sync.Map
 }
 
 // New creates a new RPC server
@@ -69,7 +77,17 @@ func New(cfg *config.Config, client PutioClient, dlService DownloadService) *Ser
 		dlService:   dlService,
 		quotaTicker: time.NewTicker(15 * time.Minute),
 		catFolders:  make(map[string]int64),
+		now:         time.Now,
 	}
+}
+
+// currentTime returns the current time. Tests build a Server without New, so
+// a nil clock falls back to time.Now.
+func (s *Server) currentTime() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
 }
 
 // Start begins listening for RPC requests

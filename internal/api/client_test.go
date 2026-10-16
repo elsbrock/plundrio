@@ -39,3 +39,23 @@ func TestTransferRootNotFoundIsDistinctFromMissingChild(t *testing.T) {
 		})
 	}
 }
+
+func TestIsNotFoundUnwrapsClientErrors(t *testing.T) {
+	notFound := &putio.ErrorResponse{Type: "NotFound"}
+
+	if !IsNotFound(notFound) {
+		t.Fatal("expected direct Put.io NotFound error to be recognized")
+	}
+	if !IsNotFound(fmt.Errorf("get transfer files: %w", notFound)) {
+		t.Fatal("expected wrapped Put.io NotFound error to be recognized")
+	}
+	if !IsNotFound(fmt.Errorf("process transfer: %w", fmt.Errorf("get transfer files: %w", notFound))) {
+		t.Fatal("expected doubly wrapped Put.io NotFound error to be recognized")
+	}
+	if IsNotFound(&putio.ErrorResponse{Type: "Other"}) {
+		t.Fatal("did not expect a different Put.io error type to match")
+	}
+	if IsNotFound(errors.New("not found")) {
+		t.Fatal("did not expect an unrelated error to match")
+	}
+}

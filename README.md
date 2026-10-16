@@ -246,6 +246,8 @@ listen: ":9091"                # Transmission RPC server address
 workers: 4                     # Number of download workers
 use-categories-target: false   # Put local downloads into per-category subfolders (e.g. <target>/tv)
 use-categories-putio: false    # Create per-category subfolders on put.io (e.g. <folder>/tv)
+keep-seeding: false            # Keep source files on put.io until seeding finishes
+keep-seeding-timeout: 0        # With keep-seeding, report a transfer as removable this long after it finished on put.io (0 disables)
 stalled-transfer-timeout: 6h   # Report unchanged Put.io downloads after this duration (0 disables)
 download_start_window:         # Optional local download start window
   enabled: false
@@ -259,6 +261,22 @@ log_level: "info"              # Log level (trace,debug,info,warn,error,fatal,pa
 A temporary move to `COMPLETING` preserves the no-progress baseline, but stall errors are reported only in `DOWNLOADING`. Any change in the byte count resets the baseline, including during `COMPLETING`; completion, other inactive states, and disappearance from the monitored list discard it. Restarting plundrio establishes a fresh observation window. Detection may occur up to one polling interval after the timeout.
 
 `download_start_window` only gates when plundrio may begin a new local download. It does not stop Put.io transfers from being created, and it does not interrupt downloads that are already in progress.
+
+#### Keep seeding
+
+When the local download completes, plundrio deletes the source file on put.io by default. It also reports the transfer as removable, so the *arr app removes it right after the import. Seeding on put.io then stops after about two minutes. Some private trackers require a minimum seed ratio or a minimum seed time. They reject such a short seed.
+
+To keep seeding, set `keep-seeding` (`PLDR_KEEP_SEEDING=true`). Plundrio then does these steps:
+
+1. It keeps the source file on put.io after the local download, so put.io continues to seed.
+2. It reports the transfer as removable only after put.io reports it `COMPLETED` (seeding finished), or after `keep-seeding-timeout` (see below). Until then, the *arr app does not remove the torrent from its download client. After the import, the *arr app no longer shows the download in its queue. The torrent stays in plundrio and on put.io, where you can follow the seeding.
+3. The `torrent-remove` call of the *arr app makes plundrio delete the put.io file and the transfer. If the *arr app asks for it, plundrio also deletes the local copy. If the file delete fails, plundrio keeps the transfer. If the local copy is complete, plundrio still reports the transfer as removable, and the *arr app tries again on its next refresh. If the local copy is not complete, `torrent-get` shows the transfer as stopped with a removal error.
+
+The files on put.io use your put.io storage quota while they seed. The *arr app must have the setting "Remove Completed" turned on for its download client. If the setting is off, the *arr app never sends `torrent-remove`. Nothing then deletes the kept files, even after put.io reports `COMPLETED`, and the quota keeps filling. The default value of `keep-seeding` is `false`. With this value, plundrio keeps the previous behavior.
+
+If you turn `keep-seeding` off after some transfers finished, plundrio does not download them again. At the next start, plundrio deletes the put.io source file of each transfer that it kept before.
+
+A torrent that nobody downloads can stay in the `SEEDING` state for a long time, because put.io decides when seeding ends. To set a limit, use `keep-seeding-timeout` (`PLDR_KEEP_SEEDING_TIMEOUT`, for example `72h`). The time starts when the transfer finished on put.io. After this time, plundrio reports the transfer as removable even if put.io still seeds it. The *arr app then sends `torrent-remove`, and plundrio deletes the put.io file and the transfer. Plundrio deletes the local copy only if the *arr app asks for it. The default is `0`, which disables the limit. The limit has no effect when `keep-seeding` is off. The *arr app removes a download only after it imported the files, so a download that the *arr app did not import stays in place.
 
 #### Category subfolders
 
@@ -281,6 +299,8 @@ export PLDR_LISTEN=:9091
 export PLDR_WORKERS=4
 export PLDR_USE_CATEGORIES_TARGET=true
 export PLDR_USE_CATEGORIES_PUTIO=true
+export PLDR_KEEP_SEEDING=true
+export PLDR_KEEP_SEEDING_TIMEOUT=72h
 export PLDR_STALLED_TRANSFER_TIMEOUT=6h
 export PLDR_DOWNLOAD_START_WINDOW_ENABLED=true
 export PLDR_DOWNLOAD_START_WINDOW_START=23:00

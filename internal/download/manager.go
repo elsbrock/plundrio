@@ -134,6 +134,10 @@ func (m *Manager) RemoveTransfer(transferID int64) {
 			Msg("Failed to remove transfer file state")
 		return
 	}
+	if err := m.removeSeedingMarker(transferID); err != nil {
+		log.Error("files").Int64("transfer_id", transferID).Err(err).Msg("Failed to remove seeding marker")
+		return
+	}
 	if err := m.removeReview(transferID); err != nil {
 		log.Error("files").Int64("transfer_id", transferID).Err(err).Msg("Failed to remove review hold")
 		return
@@ -195,6 +199,24 @@ func New(cfg *config.Config, client PutioClient) *Manager {
 			log.Debug("cleanup").
 				Int64("transfer_id", transferID).
 				Msg("Skipping source deletion: transfer has no associated file")
+			return nil
+		}
+
+		// With keep-seeding the source stays on Put.io, so seeding continues.
+		// torrent-get tells the *arr app when seeding is over, and the
+		// torrent-remove of the *arr app then deletes the source. If the
+		// marker write fails, the monitor tries the write again on each poll.
+		if m.cfg.KeepSeeding {
+			if err := m.markSeedingKept(transferID); err != nil {
+				log.Error("cleanup").
+					Int64("transfer_id", transferID).
+					Err(err).
+					Msg("Failed to record that the source file is kept on Put.io")
+				return err
+			}
+			log.Info("cleanup").
+				Int64("transfer_id", transferID).
+				Msg("Keeping source file on Put.io until seeding finishes")
 			return nil
 		}
 

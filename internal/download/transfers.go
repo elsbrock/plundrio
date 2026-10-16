@@ -156,6 +156,8 @@ func (p *TransferProcessor) checkTransfers() {
 
 	// Check for transfers that are in "Completed" state but haven't been fully cleaned up
 	p.finalizeCompletedTransfers()
+
+	p.manager.retrySeedingMarkers(inFolder)
 }
 
 // managedFolders returns the set of put.io folder IDs whose transfers this
@@ -468,11 +470,15 @@ func (p *TransferProcessor) prepareTransfer(transfer *putio.Transfer) ([]*putio.
 		return nil, nil
 	}
 	reservation := p.manager.coordinator.InitiateTransfer(transfer.ID, transfer.Name, transfer.FileID, 0)
+	// Put.io lists a kept source again after a restart, but its local copy is
+	// already complete. The *arr app can also move the local files
+	// after the import, so their absence does not mean an incomplete copy.
+	seedingKept := transfer.FileID != 0 && p.manager.SeedingKept(transfer.ID)
 	p.manager.removalMu.RUnlock()
 
 	var files []*putio.File
 	var listErr error
-	if transfer.FileID != 0 {
+	if transfer.FileID != 0 && !seedingKept {
 		files, listErr = p.manager.client.GetAllTransferFiles(p.manager.Context(), transfer.FileID)
 	}
 	p.manager.removalMu.RLock()
@@ -486,6 +492,14 @@ func (p *TransferProcessor) prepareTransfer(transfer *putio.Transfer) ([]*putio.
 		Int64("id", transfer.ID).
 		Int64("file_id", transfer.FileID).
 		Msg("Processing transfer")
+
+	if seedingKept {
+		if !p.initializeTransfer(transfer, 0) {
+			return nil, nil
+		}
+		p.manager.cleanupTransfer(transfer.ID)
+		return nil, nil
+	}
 
 	// A zero file ID means Put.io has already removed the source. It also
 	// identifies Put.io's root folder, so it must never be queried as though it
@@ -661,7 +675,7 @@ func (p *TransferProcessor) failCleanedTransfer(transfer *putio.Transfer, err er
 // handleTransferError processes transfer errors appropriately
 func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err error) {
 	var missing *api.TransferSourceNotFoundError
-	if errors.As(err, &missing) && missing.FileID == transfer.FileID && isPutioNotFound(err) {
+	if errors.As(err, &missing) && missing.FileID == transfer.FileID && api.IsNotFound(err) {
 		log.Debug("transfers").
 			Str("name", transfer.Name).
 			Int64("id", transfer.ID).
@@ -670,7 +684,7 @@ func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err er
 		p.restoreCleanedTransfer(transfer)
 		return
 	}
-	if isPutioNotFound(err) {
+	if api.IsNotFound(err) {
 		// A child can disappear while the root remains. Keep this a bounded
 		// listing failure, not evidence of legacy source absence.
 		p.failCleanedTransfer(transfer, err)
@@ -682,11 +696,6 @@ func (p *TransferProcessor) handleTransferError(transfer *putio.Transfer, err er
 		Int64("id", transfer.ID).
 		Err(err).
 		Msg("Failed to get transfer files")
-}
-
-func isPutioNotFound(err error) bool {
-	var putioErr *putio.ErrorResponse
-	return errors.As(err, &putioErr) && putioErr.Type == "NotFound"
 }
 
 // queueTransferFiles processes files in a transfer and queues them for download

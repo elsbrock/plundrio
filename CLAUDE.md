@@ -37,7 +37,7 @@ go build ./cmd/plundrio && ./plundrio run --help
 ```
 cmd/plundrio/main.go    Entry point, CLI (cobra + viper), wires everything together
 internal/
-  config/               Config struct (TargetDir, FolderID, OAuthToken, ListenAddr, WorkerCount, UseCategoriesTarget, UseCategoriesPutio)
+  config/               Config struct (TargetDir, FolderID, OAuthToken, ListenAddr, WorkerCount, UseCategoriesTarget, UseCategoriesPutio, KeepSeeding)
   api/                  Put.io API client wrapper (uploads, transfers, files, auth)
   server/               Transmission RPC server (HTTP on :9091)
   download/             Download manager, transfer coordinator, worker pool
@@ -51,7 +51,7 @@ internal/
 3. **Monitoring**: `Manager.monitorTransfers()` polls put.io every 30s, `TransferProcessor.checkTransfers()` categorizes transfers by status
 4. **Download**: Ready transfers get files queued as `downloadJob`s, processed by worker pool via `grab` library
 5. **Coordination**: `TransferCoordinator` tracks lifecycle states (Initial -> Downloading -> Completed -> Processed), `TransferContext` holds per-transfer state
-6. **Cleanup**: On completion, cleanup hook deletes source file from put.io but keeps transfer record for *arr visibility
+6. **Cleanup**: On completion, cleanup hook deletes source file from put.io but keeps transfer record for *arr visibility. If `KeepSeeding` is on, the hook keeps the source file, so put.io keeps seeding. `torrent-remove` deletes the file later
 7. **torrent-remove**: *arr app requests removal; plundrio deletes put.io file + transfer, optionally deletes local files, and drops all local tracking for that transfer
 
 ### Concurrency Model
@@ -82,7 +82,13 @@ Progress is split 50/50: put.io download (0-50%) + local download (50-100%). Thi
 
 ### Transfer Lifecycle States
 
-`TransferLifecycleState` in `types.go`: Initial -> Downloading -> Completed -> Processed (or Failed/Cancelled). The "Processed" state means files are downloaded and put.io source cleaned up; the transfer record stays for *arr to query until `torrent-remove`, which is what finally removes it via `Manager.RemoveTransfer`.
+`TransferLifecycleState` in `types.go`: Initial -> Downloading -> Completed -> Processed (or Failed/Cancelled). The "Processed" state means files are downloaded and put.io source cleaned up. The transfer record stays for *arr to query until `torrent-remove`, which is what finally removes it via `Manager.RemoveTransfer`.
+
+If `KeepSeeding` is on, the source stays on put.io. In that case, `handleTorrentGet` reports the transfer as removable only after put.io reports `COMPLETED` (seeding is finished). For a Processed transfer, `torrent-remove` deletes the kept source before `PrepareRemoval`. A failed delete then changes no local state, so `torrent-get` still reports the torrent as removable and the *arr app retries.
+
+With `KeepSeeding` on, the cleanup hook writes the disk-only marker `.plundrio-files/<id>.seeding.json`. If that write fails, the monitor writes the marker again on each poll (`Manager.retrySeedingMarkers`). After a restart, a transfer with this marker returns to Processed. Plundrio does not download it again, because the *arr app can move the local files. `torrent-remove` deletes the marker.
+
+If `KeepSeedingTimeout` is set, `handleTorrentGet` also reports a Processed transfer as removable when the time since `finished_at` is longer than the timeout (`Server.seedingTimedOut`). `Server.logSeedingTimeout` writes one log line per transfer and keeps its record in `Server.seedingTimeoutLogged`. `torrent-remove` clears the record, and `handleTorrentGet` drops the records of transfers that left the list.
 
 A `Failed` transfer keeps its context only until the next poll: `shouldProcess`
 drops it so the transfer is retried, bounded by `maxReprocessAttempts` and
@@ -130,8 +136,10 @@ go test -race ./...    # required: most defects here are concurrency bugs
 ```
 
 Coverage: `internal/download` (category store, transfer monitor, shutdown,
-byte accounting, errors, window) and `internal/server` (torrent-add category
-handling, local-data deletion, progress, extract-category).
+byte accounting, errors, window, keep-seeding markers). Also `internal/server`
+(torrent-add category handling, local-data deletion, progress,
+extract-category, keep-seeding removability and time limit, torrent-remove source
+deletion).
 
 Concurrency fixes carry regression tests that were each confirmed to fail
 against the previous implementation — keep that habit, since a test that
