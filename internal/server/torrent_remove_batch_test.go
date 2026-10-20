@@ -82,8 +82,9 @@ func TestTorrentRemoveContinuesBatchAfterFailure(t *testing.T) {
 			}
 			for _, transfer := range transfers {
 				manager.SetCategory(transfer.ID, "books")
-				payload := filepath.Join(root, "books", transfer.Name)
-				if err := os.WriteFile(filepath.Join(stateDir, fmt.Sprintf("%d.json", transfer.ID)), []byte(fmt.Sprintf(`[{"name":%q,"length":7}]`, transfer.Name)), 0600); err != nil {
+				payload := filepath.Join(root, "books", transfer.Name, "book.epub")
+				manifest := fmt.Sprintf(`[{"name":"%s/book.epub","length":7}]`, transfer.Name)
+				if err := os.WriteFile(filepath.Join(stateDir, fmt.Sprintf("%d.json", transfer.ID)), []byte(manifest), 0600); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.MkdirAll(filepath.Dir(payload), 0700); err != nil {
@@ -119,8 +120,9 @@ func TestTorrentRemoveContinuesBatchAfterFailure(t *testing.T) {
 				if got := manager.RemovalPending(transfer.ID); got != (tt.remoteFailures[transfer.ID] != nil) {
 					t.Errorf("transfer %d removal pending = %v", transfer.ID, got)
 				}
-				if _, present := manager.GetTransferFiles(transfer.ID); present != failed {
-					t.Errorf("transfer %d manifest present = %v, want %v", transfer.ID, present, failed)
+				_, err := os.Stat(filepath.Join(root, ".plundrio-files", fmt.Sprintf("%d.json", transfer.ID)))
+				if (failed && err != nil) || (!failed && !os.IsNotExist(err)) {
+					t.Errorf("transfer %d manifest stat = %v, want present=%v", transfer.ID, err, failed)
 				}
 				wantCategory := ""
 				if failed {
@@ -129,7 +131,7 @@ func TestTorrentRemoveContinuesBatchAfterFailure(t *testing.T) {
 				if got := manager.GetCategory(transfer.ID); got != wantCategory {
 					t.Errorf("transfer %d category = %q, want %q", transfer.ID, got, wantCategory)
 				}
-				data, statErr := os.ReadFile(filepath.Join(root, "books", transfer.Name))
+				data, statErr := os.ReadFile(filepath.Join(root, "books", transfer.Name, "book.epub"))
 				if failed && (statErr != nil || string(data) != "payload") {
 					t.Errorf("transfer %d failed removal lost local payload: %v", transfer.ID, statErr)
 				} else if !failed && !os.IsNotExist(statErr) {

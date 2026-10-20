@@ -35,7 +35,7 @@ func TestLegacyMissingProofRequiresReview(t *testing.T) {
 					t.Fatal("review record must not automatically reprocess")
 				}
 			}
-			if files, ok := p.manager.GetTransferFiles(101); ok || len(files) != 0 {
+			if manifest, err := p.manager.transferFiles.loadManifest(101); err != nil || len(manifest.Files) != 0 {
 				t.Fatal("review must not invent a manifest")
 			}
 		})

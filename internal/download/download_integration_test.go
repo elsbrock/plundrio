@@ -248,7 +248,7 @@ func TestRemovedStalledWorkerDrainsWithoutRetryOrSourceCleanup(t *testing.T) {
 	deleted := make(chan int64, 1)
 	m.client.(*fakeClient).deletedFiles = deleted
 	startTransfer(t, m, size)
-	if err := m.transferFiles.Set(1, []TransferFile{{Name: "movie/movie.mkv", Length: size}}); err != nil {
+	if err := m.transferFiles.setManifest(LocalManifest{TransferID: 1, LocalRoot: "movie", Files: []TransferFile{{Name: "movie/movie.mkv", Length: size}}}); err != nil {
 		t.Fatal(err)
 	}
 	stopped := make(chan struct{})
@@ -283,7 +283,7 @@ func TestRemovedStalledWorkerDrainsWithoutRetryOrSourceCleanup(t *testing.T) {
 	if !m.RemovalPending(1) {
 		t.Fatal("worker discarded suppression before remote absence was confirmed")
 	}
-	if _, ok := m.GetTransferFiles(1); !ok {
+	if manifest, err := m.transferFiles.loadManifest(1); err != nil || len(manifest.Files) == 0 {
 		t.Fatal("worker discarded ownership evidence")
 	}
 	select {
