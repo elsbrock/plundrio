@@ -2,7 +2,7 @@ module github.com/elsbrock/plundrio
 
 go 1.26.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
