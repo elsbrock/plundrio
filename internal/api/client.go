@@ -181,13 +181,18 @@ func (e *TransferSourceNotFoundError) Error() string {
 
 func (e *TransferSourceNotFoundError) Unwrap() error { return e.Err }
 
+// IsNotFound reports whether err is a Put.io NotFound response.
+func IsNotFound(err error) bool {
+	var response *putio.ErrorResponse
+	return errors.As(err, &response) && response.Type == "NotFound"
+}
+
 // GetAllTransferFiles recursively gets all files in a transfer
 func (c *Client) GetAllTransferFiles(ctx context.Context, fileID int64) ([]*putio.File, error) {
 	// First check if the fileID is a file itself
 	file, err := c.client.Files.Get(ctx, fileID)
 	if err != nil {
-		var response *putio.ErrorResponse
-		if fileID > 0 && errors.As(err, &response) && response.Type == "NotFound" {
+		if fileID > 0 && IsNotFound(err) {
 			return nil, &TransferSourceNotFoundError{FileID: fileID, Err: err}
 		}
 		return nil, fmt.Errorf("get transfer files: %w", err)

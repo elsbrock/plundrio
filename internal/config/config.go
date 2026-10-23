@@ -49,4 +49,20 @@ type Config struct {
 	// uploads into "<folder>/tv"). When false (the default), all transfers are
 	// added directly to the configured folder.
 	UseCategoriesPutio bool
+
+	// If KeepSeeding is true, plundrio leaves the source file on Put.io after
+	// the local download, so Put.io keeps seeding. Plundrio then reports a
+	// transfer as removable to the *arr apps only when Put.io reports it
+	// COMPLETED (seeding finished). The torrent-remove call of the *arr app
+	// deletes the Put.io file and the transfer. If it is false (the default),
+	// plundrio deletes the source file when the local copy is complete, and
+	// seeding stops at that time.
+	KeepSeeding bool
+
+	// KeepSeedingTimeout limits how long a transfer seeds on Put.io after it
+	// finished, when KeepSeeding is on. After that time, plundrio reports the
+	// transfer as removable even if Put.io still seeds it. The *arr app then
+	// sends torrent-remove. Zero disables the limit. It has no effect when
+	// KeepSeeding is off.
+	KeepSeedingTimeout time.Duration
 }

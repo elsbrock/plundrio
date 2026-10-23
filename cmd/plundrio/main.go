@@ -24,6 +24,7 @@ import (
 const (
 	defaultStalledTransferTimeout = 6 * time.Hour
 	stalledTransferTimeoutKey     = "stalled-transfer-timeout"
+	keepSeedingTimeoutKey         = "keep-seeding-timeout"
 )
 
 var version = "dev"
@@ -80,6 +81,8 @@ var runCmd = &cobra.Command{
 		// PLDR_USE_CATEGORIES_* env vars, and config-file keys all resolve.
 		useCategoriesTarget := viper.GetBool("use-categories-target")
 		useCategoriesPutio := viper.GetBool("use-categories-putio")
+		keepSeeding := viper.GetBool("keep-seeding")
+		keepSeedingTimeout := viper.GetDuration(keepSeedingTimeoutKey)
 		stalledTransferTimeout := viper.GetDuration(stalledTransferTimeoutKey)
 		downloadStartWindow := config.DownloadStartWindowConfig{
 			Enabled: viper.GetBool("download_start_window.enabled"),
@@ -94,6 +97,8 @@ var runCmd = &cobra.Command{
 			Int("workers", workerCount).
 			Bool("use_categories_target", useCategoriesTarget).
 			Bool("use_categories_putio", useCategoriesPutio).
+			Bool("keep_seeding", keepSeeding).
+			Str("keep_seeding_timeout", keepSeedingTimeout.String()).
 			Str("stalled_transfer_timeout", stalledTransferTimeout.String()).
 			Bool("download_start_window_enabled", downloadStartWindow.Enabled).
 			Str("download_start_window_start", downloadStartWindow.Start).
@@ -137,10 +142,18 @@ var runCmd = &cobra.Command{
 			DownloadStartWindow:    downloadStartWindow,
 			UseCategoriesTarget:    useCategoriesTarget,
 			UseCategoriesPutio:     useCategoriesPutio,
+			KeepSeeding:            keepSeeding,
+			KeepSeedingTimeout:     keepSeedingTimeout,
 		}
 
 		if err := download.ValidateStartWindow(cfg.DownloadStartWindow); err != nil {
 			log.Fatal("config").Err(err).Msg("Invalid download start window configuration")
+		}
+		if keepSeedingTimeout < 0 {
+			log.Fatal("config").Str("keep_seeding_timeout", keepSeedingTimeout.String()).Msg("keep-seeding-timeout must not be negative")
+		}
+		if keepSeedingTimeout > 0 && !keepSeeding {
+			log.Warn("config").Msg("keep-seeding-timeout has no effect because keep-seeding is off")
 		}
 
 		// Initialize Put.io API client
@@ -219,6 +232,8 @@ listen: ":9091"							# Transmission RPC server address
 workers: 4									# Number of download workers
 use-categories-target: false # Put local downloads into per-category subfolders (e.g. <target>/tv)
 use-categories-putio: false  # Create per-category subfolders on Put.io (e.g. <folder>/tv)
+keep-seeding: false          # Keep source files on Put.io until seeding finishes (instead of deleting them after the local download)
+keep-seeding-timeout: 0      # With keep-seeding, report a transfer as removable this long after it finished on Put.io, for example 72h (0 disables)
 stalled-transfer-timeout: 6h # Report unchanged Put.io downloads after this duration (0 disables)
 download_start_window:       # Optional local download start window
   enabled: false
@@ -228,7 +243,8 @@ log_level: "info"					  # Log level (trace,debug,info,warn,error,fatal,panic,non
 
 # Environment variables:
 # PLDR_TARGET, PLDR_FOLDER, PLDR_TOKEN, PLDR_LISTEN, PLDR_WORKERS,
-# PLDR_USE_CATEGORIES_TARGET, PLDR_USE_CATEGORIES_PUTIO,
+# PLDR_USE_CATEGORIES_TARGET, PLDR_USE_CATEGORIES_PUTIO, PLDR_KEEP_SEEDING,
+# PLDR_KEEP_SEEDING_TIMEOUT,
 # PLDR_STALLED_TRANSFER_TIMEOUT,
 # PLDR_DOWNLOAD_START_WINDOW_ENABLED, PLDR_DOWNLOAD_START_WINDOW_START,
 # PLDR_DOWNLOAD_START_WINDOW_END, PLDR_LOG_LEVEL
@@ -334,6 +350,8 @@ func init() {
 	runCmd.Flags().IntP("workers", "w", 4, "Number of workers")
 	runCmd.Flags().Bool("use-categories-target", false, "Place local downloads into per-category subfolders of the target directory (based on the *arr download-dir)")
 	runCmd.Flags().Bool("use-categories-putio", false, "Create per-category subfolders under the Put.io folder and upload transfers into them")
+	runCmd.Flags().Bool("keep-seeding", false, "Keep source files on Put.io until seeding finishes instead of deleting them after the local download")
+	runCmd.Flags().Duration(keepSeedingTimeoutKey, 0, "With keep-seeding, report a transfer as removable this long after it finished on Put.io, even if Put.io still seeds it (0 disables)")
 	runCmd.Flags().Duration(stalledTransferTimeoutKey, defaultStalledTransferTimeout, "Report downloading Put.io transfers with no byte progress after this duration (0 disables)")
 	runCmd.Flags().String("log-level", "", "Log level (trace,debug,info,warn,error,fatal,none,pretty)")
 

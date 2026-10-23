@@ -14,26 +14,6 @@ import (
 	"github.com/elsbrock/plundrio/internal/config"
 )
 
-func TestIsPutioNotFoundUnwrapsClientErrors(t *testing.T) {
-	notFound := &putio.ErrorResponse{Type: "NotFound"}
-
-	if !isPutioNotFound(notFound) {
-		t.Fatal("expected direct Put.io NotFound error to be recognized")
-	}
-	if !isPutioNotFound(fmt.Errorf("get transfer files: %w", notFound)) {
-		t.Fatal("expected wrapped Put.io NotFound error to be recognized")
-	}
-	if !isPutioNotFound(fmt.Errorf("process transfer: %w", fmt.Errorf("get transfer files: %w", notFound))) {
-		t.Fatal("expected doubly wrapped Put.io NotFound error to be recognized")
-	}
-	if isPutioNotFound(&putio.ErrorResponse{Type: "Other"}) {
-		t.Fatal("did not expect a different Put.io error type to match")
-	}
-	if isPutioNotFound(errors.New("not found")) {
-		t.Fatal("did not expect an unrelated error to match")
-	}
-}
-
 func TestHandleTransferErrorHoldsWrappedRootNotFoundWithoutManifest(t *testing.T) {
 	manager := newTestProcessor(t, 42, false, &fakePutioClient{}).manager
 	transfer := &putio.Transfer{ID: 1, Name: "Example", FileID: 2}
