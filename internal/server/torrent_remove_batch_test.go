@@ -119,8 +119,8 @@ func TestTorrentRemoveContinuesBatchAfterFailure(t *testing.T) {
 				if got := manager.RemovalPending(transfer.ID); got != (tt.remoteFailures[transfer.ID] != nil) {
 					t.Errorf("transfer %d removal pending = %v", transfer.ID, got)
 				}
-				if _, present := manager.GetTransferFiles(transfer.ID); present != failed {
-					t.Errorf("transfer %d manifest present = %v, want %v", transfer.ID, present, failed)
+				if files, err := manager.GetTransferFiles(transfer.ID); err != nil || (len(files) > 0) != failed {
+					t.Errorf("transfer %d manifest = %v, err=%v, want present=%v", transfer.ID, files, err, failed)
 				}
 				wantCategory := ""
 				if failed {

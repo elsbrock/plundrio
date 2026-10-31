@@ -457,7 +457,7 @@ func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (inte
 			Int("status", status).
 			Msg("Calculated progress")
 
-		manifest, _ := s.dlService.GetTransferFiles(t.ID)
+		manifest, manifestErr := s.dlService.GetTransferFiles(t.ID)
 		// Arr builds its import path from downloadDir and name.
 		localName := download.TransferRoot(t.Name, manifest)
 		torrentInfo := map[string]interface{}{
@@ -490,11 +490,20 @@ func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (inte
 		}
 
 		if slices.Contains(params.Fields, "files") {
-			files, err := s.localTorrentFiles(t, manifest, percentDone >= 1)
-			if err != nil {
-				return nil, fmt.Errorf("list local files for transfer %d: %w", t.ID, err)
+			files := []transmissionFile{}
+			if manifestErr == nil {
+				files, manifestErr = s.localTorrentFiles(t, manifest, percentDone >= 1)
+			}
+			if manifestErr != nil {
+				files = []transmissionFile{}
 			}
 			torrentInfo["files"] = files
+		}
+		if manifestErr != nil {
+			torrentInfo["status"] = trStatusStopped
+			torrentInfo["rateDownload"] = 0
+			torrentInfo["error"] = trErrorLocal
+			torrentInfo["errorString"] = fmt.Sprintf("list local files for transfer %d: %v", t.ID, manifestErr)
 		}
 		if s.dlService.RemovalPending(t.ID) {
 			// A failed removal is terminal local state, even without a context.

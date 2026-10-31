@@ -283,7 +283,7 @@ func TestRemovedStalledWorkerDrainsWithoutRetryOrSourceCleanup(t *testing.T) {
 	if !m.RemovalPending(1) {
 		t.Fatal("worker discarded suppression before remote absence was confirmed")
 	}
-	if _, ok := m.GetTransferFiles(1); !ok {
+	if _, ok := m.transferFiles.Get(1); !ok {
 		t.Fatal("worker discarded ownership evidence")
 	}
 	select {

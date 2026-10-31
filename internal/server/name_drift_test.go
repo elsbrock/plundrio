@@ -21,9 +21,17 @@ import (
 type manifestRPCService struct {
 	*download.Manager
 	transfers []*putio.Transfer
+	contexts  map[int64]*download.TransferContext
 }
 
 func (s *manifestRPCService) GetTransfers() []*putio.Transfer { return s.transfers }
+
+func (s *manifestRPCService) GetTransferContext(id int64) (*download.TransferContext, bool) {
+	if ctx, ok := s.contexts[id]; ok {
+		return ctx, true
+	}
+	return s.Manager.GetTransferContext(id)
+}
 
 type manifestRPCTorrent struct {
 	ID           int64
@@ -140,5 +148,62 @@ func TestTorrentRemoveUsesSavedRoot(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "books/new-root/file.epub")); err != nil || string(data) != "other" {
 		t.Fatalf("remote-name directory changed: %q, %v", data, err)
+	}
+}
+
+func TestBadManifestDoesNotEmptyTorrentGet(t *testing.T) {
+	for _, bad := range []string{
+		`not json`, `[]`,
+		`[{"name":"bad/file.epub","length":-1}]`,
+		`[{"name":"../file.epub","length":4}]`,
+		`[{"name":"bad/file.epub","length":4},{"name":"other/file.epub","length":4}]`,
+	} {
+		t.Run(bad, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := &config.Config{TargetDir: root}
+			writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(bad))
+			writeManifestFixture(t, root, ".plundrio-files/202.json", []byte(`[{"name":"saved/file.epub","length":4}]`))
+			service := &manifestRPCService{Manager: download.New(cfg, nil), transfers: []*putio.Transfer{
+				{ID: 101, Name: "bad", Status: "COMPLETED"},
+				{ID: 202, Name: "renamed", Status: "COMPLETED"},
+			}}
+			got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":["id","name","files","status","error","errorString"]}`, "")
+			if len(got) != 2 {
+				t.Fatalf("queue lost transfers: %+v", got)
+			}
+			if got[0].ID != 101 || got[0].Error != trErrorLocal || got[0].ErrorString == "" || got[0].Status != trStatusStopped || got[0].Files == nil || len(got[0].Files) != 0 {
+				t.Fatalf("bad transfer = %+v", got[0])
+			}
+			if got[1].ID != 202 || got[1].Error != 0 || got[1].Name != "saved" || len(got[1].Files) != 1 {
+				t.Fatalf("healthy transfer = %+v", got[1])
+			}
+		})
+	}
+}
+
+func TestTorrentGetAllowsImportedFilesAfterRename(t *testing.T) {
+	for _, state := range []download.TransferLifecycleState{download.TransferLifecycleCompleted, download.TransferLifecycleProcessed} {
+		t.Run(state.String(), func(t *testing.T) {
+			root := t.TempDir()
+			cfg := &config.Config{TargetDir: root}
+			// The importer has moved the payload; only its manifest remains.
+			writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"old-root/file.epub","length":4}]`))
+			ctx := download.NewTransferContext(101, 1, state)
+			ctx.SetTotalSize(4)
+			ctx.AddDownloadedBytes(4)
+			service := &manifestRPCService{Manager: download.New(cfg, nil),
+				transfers: []*putio.Transfer{{ID: 101, Name: "new-root", Status: "COMPLETED", PercentDone: 100, Size: 4}},
+				contexts:  map[int64]*download.TransferContext{101: ctx},
+			}
+			for _, fields := range []string{`["id","name","error","status"]`, `["id","name","error","status","files"]`} {
+				got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":`+fields+`}`, "")
+				if len(got) != 1 || got[0].Name != "old-root" || got[0].Error != 0 {
+					t.Fatalf("imported transfer = %+v", got)
+				}
+				if strings.Contains(fields, "files") && (len(got[0].Files) != 1 || got[0].Files[0].BytesCompleted != 4) {
+					t.Fatalf("completed files = %+v", got[0].Files)
+				}
+			}
+		})
 	}
 }

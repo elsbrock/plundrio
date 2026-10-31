@@ -74,8 +74,8 @@ func (d *mockDownloadService) GetTransferContext(transferID int64) (*download.Tr
 	return nil, false
 }
 
-func (d *mockDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, bool) {
-	return nil, false
+func (d *mockDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, error) {
+	return nil, nil
 }
 
 func (d *mockDownloadService) SetCategory(transferID int64, category string) {
