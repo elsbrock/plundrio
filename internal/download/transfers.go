@@ -642,7 +642,7 @@ func validRelativeTransferPath(path string) bool {
 
 func (p *TransferProcessor) validateLocalTransferFiles(transfer *putio.Transfer, files []TransferFile) error {
 	downloadDir := filepath.Join(p.targetDir, p.manager.localCategory(transfer.ID))
-	transferName := filepath.Clean(TransferRoot(transfer.Name, files))
+	transferName := filepath.Clean(transfer.Name)
 	if !validRelativeTransferPath(transferName) || IsReservedTransferName(transferName) {
 		return fmt.Errorf("unsafe transfer name %q", transfer.Name)
 	}

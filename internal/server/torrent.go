@@ -730,14 +730,14 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 			if err := deleteLocalData(localTargetDir, localName); err != nil {
 				log.Error("rpc").
 					Str("operation", "torrent-remove").
-					Str("transfer_name", transfer.Name).
+					Str("transfer_name", localName).
 					Str("category", category).
 					Err(err).
 					Msg("Failed to delete local files")
 			} else {
 				log.Info("rpc").
 					Str("operation", "torrent-remove").
-					Str("transfer_name", transfer.Name).
+					Str("transfer_name", localName).
 					Str("category", category).
 					Msg("Deleted local files")
 			}

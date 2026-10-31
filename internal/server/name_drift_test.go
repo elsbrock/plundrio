@@ -34,14 +34,13 @@ func (s *manifestRPCService) GetTransferContext(id int64) (*download.TransferCon
 }
 
 type manifestRPCTorrent struct {
-	ID           int64
-	Name         string
-	HashString   string
-	Error        int
-	ErrorString  string
-	Status       int
-	SeedIdleMode int
-	Files        []transmissionFile
+	ID          int64
+	Name        string
+	HashString  string
+	Error       int
+	ErrorString string
+	Status      int
+	Files       []transmissionFile
 }
 
 func manifestRPC(t *testing.T, srv *Server, arguments string) []manifestRPCTorrent {
@@ -172,6 +171,17 @@ func TestBadManifestDoesNotEmptyTorrentGet(t *testing.T) {
 			}
 			if got[1].ID != 202 || got[1].Error != 0 || got[1].Name != "saved" || len(got[1].Files) != 1 {
 				t.Fatalf("healthy transfer = %+v", got[1])
+			}
+			if bad == "not json" || bad == "[]" {
+				t.Run("without files", func(t *testing.T) {
+					got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":["id","name","status","error","errorString"]}`)
+					if len(got) != 2 || got[0].ID != 101 || got[0].Error != trErrorLocal || got[0].Status != trStatusStopped || got[0].ErrorString == "" {
+						t.Fatalf("bad manifest without files = %+v", got)
+					}
+					if got[1].ID != 202 || got[1].Error != 0 || got[1].Name != "saved" {
+						t.Fatalf("healthy transfer without files = %+v", got[1])
+					}
+				})
 			}
 		})
 	}
