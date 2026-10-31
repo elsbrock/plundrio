@@ -143,7 +143,7 @@ func TestHandleTorrentGetRejectsUnsafeManifest(t *testing.T) {
 		},
 	}
 	server := &Server{cfg: &config.Config{TargetDir: t.TempDir()}, dlService: service}
-	got := manifestRPC(t, server, `{"ids":[101],"fields":["files","error","errorString"]}`, "")
+	got := manifestRPC(t, server, `{"ids":[101],"fields":["files","error","errorString"]}`)
 	if len(got) != 1 || got[0].Error != trErrorLocal || len(got[0].Files) != 0 {
 		t.Fatalf("unsafe manifest was not a per-transfer error: %+v", got)
 	}

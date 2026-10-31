@@ -44,7 +44,7 @@ type manifestRPCTorrent struct {
 	Files        []transmissionFile
 }
 
-func manifestRPC(t *testing.T, srv *Server, arguments, wantError string) []manifestRPCTorrent {
+func manifestRPC(t *testing.T, srv *Server, arguments string) []manifestRPCTorrent {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/transmission/rpc", strings.NewReader(
 		`{"method":"torrent-get","tag":7,"arguments":`+arguments+`}`))
@@ -53,18 +53,11 @@ func manifestRPC(t *testing.T, srv *Server, arguments, wantError string) []manif
 	srv.handleRPC(response, req)
 	var decoded struct {
 		Result    string
-		Message   string
 		Tag       int
 		Arguments struct{ Torrents []manifestRPCTorrent }
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
-	}
-	if wantError != "" {
-		if response.Code != http.StatusOK || decoded.Result != "error" || decoded.Message != wantError {
-			t.Fatalf("name-drift reproduction = HTTP %d %s, want error %q", response.Code, response.Body.String(), wantError)
-		}
-		return nil
 	}
 	if response.Code != http.StatusOK || decoded.Result != "success" || decoded.Tag != 7 {
 		t.Fatalf("files-inclusive RPC failed: HTTP %d %s", response.Code, response.Body.String())
@@ -104,11 +97,11 @@ func TestManifestNameDriftRPC(t *testing.T) {
 			for _, selector := range []string{`101`, `"abc123"`} {
 				t.Run(selector, func(t *testing.T) {
 					// The import root is also stable when files are not requested.
-					ids := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString"]}`, selector), "")
+					ids := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString"]}`, selector))
 					if len(ids) != 1 || ids[0].ID != 101 || ids[0].Name != "old-root" {
 						t.Fatalf("ID-only control = %+v", ids)
 					}
-					got := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString","files","error","errorString"]}`, selector), "")
+					got := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString","files","error","errorString"]}`, selector))
 					want := []transmissionFile{{Name: "old-root/file.epub", Length: 4}}
 					if len(got) != 1 || got[0].ID != 101 || got[0].Name != "old-root" || got[0].HashString != "ABC123" || got[0].Error != 0 || !reflect.DeepEqual(got[0].Files, want) {
 						t.Fatalf("files-inclusive response = %+v, want unchanged old-root files %+v", got, want)
@@ -138,7 +131,10 @@ func TestTorrentRemoveUsesSavedRoot(t *testing.T) {
 	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"old-root/file.epub","length":4}]`))
 	writeManifestFixture(t, root, "books/old-root/file.epub", []byte("book"))
 	writeManifestFixture(t, root, "books/new-root/file.epub", []byte("other"))
-	client := &torrentAddClient{transfers: []*putio.Transfer{{ID: 101, Name: "new-root", Status: "DOWNLOADING"}}}
+	client := &pruningRemovalClient{
+		torrentAddClient: &torrentAddClient{transfers: []*putio.Transfer{{ID: 101, Name: "new-root", Status: "DOWNLOADING"}}},
+		manager:          manager,
+	}
 	srv := &Server{cfg: cfg, client: client, dlService: manager}
 	if _, err := srv.handleTorrentRemove(context.Background(), json.RawMessage(`{"ids":[101],"delete-local-data":true}`)); err != nil {
 		t.Fatal(err)
@@ -167,7 +163,7 @@ func TestBadManifestDoesNotEmptyTorrentGet(t *testing.T) {
 				{ID: 101, Name: "bad", Status: "COMPLETED"},
 				{ID: 202, Name: "renamed", Status: "COMPLETED"},
 			}}
-			got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":["id","name","files","status","error","errorString"]}`, "")
+			got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":["id","name","files","status","error","errorString"]}`)
 			if len(got) != 2 {
 				t.Fatalf("queue lost transfers: %+v", got)
 			}
@@ -196,7 +192,7 @@ func TestTorrentGetAllowsImportedFilesAfterRename(t *testing.T) {
 				contexts:  map[int64]*download.TransferContext{101: ctx},
 			}
 			for _, fields := range []string{`["id","name","error","status"]`, `["id","name","error","status","files"]`} {
-				got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":`+fields+`}`, "")
+				got := manifestRPC(t, &Server{cfg: cfg, dlService: service}, `{"fields":`+fields+`}`)
 				if len(got) != 1 || got[0].Name != "old-root" || got[0].Error != 0 {
 					t.Fatalf("imported transfer = %+v", got)
 				}

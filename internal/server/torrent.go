@@ -630,6 +630,10 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 			continue
 		}
 
+		// Remote deletion can let the monitor prune the manifest before local cleanup.
+		manifest, _ := s.dlService.GetTransferFiles(transfer.ID)
+		localName := download.TransferRoot(transfer.Name, manifest)
+
 		// With keep-seeding the source file is still on Put.io. If the local
 		// copy is complete, delete the source before any local state changes.
 		// If that delete fails, torrent-get still reports the torrent as
@@ -723,8 +727,7 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 
 		if params.DeleteLocalData {
 			localTargetDir := filepath.Join(s.cfg.TargetDir, category)
-			manifest, _ := s.dlService.GetTransferFiles(transfer.ID)
-			if err := deleteLocalData(localTargetDir, download.TransferRoot(transfer.Name, manifest)); err != nil {
+			if err := deleteLocalData(localTargetDir, localName); err != nil {
 				log.Error("rpc").
 					Str("operation", "torrent-remove").
 					Str("transfer_name", transfer.Name).
