@@ -444,6 +444,11 @@ func (p *TransferProcessor) startTransferProcessing(transfer *putio.Transfer) {
 
 // processTransfer handles downloading of a completed or seeding transfer
 func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
+	// Keep the local destination stable while refreshing the remote file list.
+	savedFiles, _ := p.manager.GetTransferFiles(transfer.ID)
+	localTransfer := *transfer
+	localTransfer.Name = TransferRoot(transfer.Name, savedFiles)
+	transfer = &localTransfer
 	files, transferCtx := p.prepareTransfer(transfer)
 	if transferCtx == nil {
 		return
@@ -637,7 +642,7 @@ func validRelativeTransferPath(path string) bool {
 
 func (p *TransferProcessor) validateLocalTransferFiles(transfer *putio.Transfer, files []TransferFile) error {
 	downloadDir := filepath.Join(p.targetDir, p.manager.localCategory(transfer.ID))
-	transferName := filepath.Clean(transfer.Name)
+	transferName := filepath.Clean(TransferRoot(transfer.Name, files))
 	if !validRelativeTransferPath(transferName) || IsReservedTransferName(transferName) {
 		return fmt.Errorf("unsafe transfer name %q", transfer.Name)
 	}

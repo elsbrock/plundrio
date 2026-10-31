@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -94,21 +95,12 @@ func TestManifestNameDriftRPC(t *testing.T) {
 			srv := &Server{cfg: cfg, dlService: service}
 			for _, selector := range []string{`101`, `"abc123"`} {
 				t.Run(selector, func(t *testing.T) {
-					// This masks the bug: fields without files do not validate ownership.
-					ids := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","hashString"]}`, selector), "")
-					if len(ids) != 1 || ids[0].ID != 101 {
+					// The import root is also stable when files are not requested.
+					ids := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString"]}`, selector), "")
+					if len(ids) != 1 || ids[0].ID != 101 || ids[0].Name != "old-root" {
 						t.Fatalf("ID-only control = %+v", ids)
 					}
-					// Characterize the original rejection so this reproduction commit
-					// stays green; the fix replaces it with a saved-root success assertion.
-					wantError := ""
-					if name == "new-root" {
-						wantError = `list local files for transfer 101: manifest file "old-root/file.epub" is outside transfer "new-root"`
-					}
-					got := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString","files","error","errorString"]}`, selector), wantError)
-					if wantError != "" {
-						return
-					}
+					got := manifestRPC(t, srv, fmt.Sprintf(`{"ids":[%s],"fields":["id","name","hashString","files","error","errorString"]}`, selector), "")
 					want := []transmissionFile{{Name: "old-root/file.epub", Length: 4}}
 					if len(got) != 1 || got[0].ID != 101 || got[0].Name != "old-root" || got[0].HashString != "ABC123" || got[0].Error != 0 || !reflect.DeepEqual(got[0].Files, want) {
 						t.Fatalf("files-inclusive response = %+v, want unchanged old-root files %+v", got, want)
@@ -127,5 +119,26 @@ func TestManifestNameDriftRPC(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, "new-root")); !os.IsNotExist(err) {
 		t.Fatalf("remote name created a local root: %v", err)
+	}
+}
+
+func TestTorrentRemoveUsesSavedRoot(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{TargetDir: root, UseCategoriesTarget: true}
+	manager := download.New(cfg, nil)
+	manager.SetCategory(101, "books")
+	writeManifestFixture(t, root, ".plundrio-files/101.json", []byte(`[{"name":"old-root/file.epub","length":4}]`))
+	writeManifestFixture(t, root, "books/old-root/file.epub", []byte("book"))
+	writeManifestFixture(t, root, "books/new-root/file.epub", []byte("other"))
+	client := &torrentAddClient{transfers: []*putio.Transfer{{ID: 101, Name: "new-root", Status: "DOWNLOADING"}}}
+	srv := &Server{cfg: cfg, client: client, dlService: manager}
+	if _, err := srv.handleTorrentRemove(context.Background(), json.RawMessage(`{"ids":[101],"delete-local-data":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "books/old-root")); !os.IsNotExist(err) {
+		t.Fatalf("saved root remains: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "books/new-root/file.epub")); err != nil || string(data) != "other" {
+		t.Fatalf("remote-name directory changed: %q, %v", data, err)
 	}
 }

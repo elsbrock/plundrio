@@ -484,3 +484,25 @@ func unmanagedObjectID(t *testing.T, service *Service, source, objectPath string
 	t.Fatalf("unmanaged object %s:%s not found in report", source, objectPath)
 	return ""
 }
+
+func TestReconcileUsesSavedRootAfterRename(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "books", "old-root"))
+	mustMkdir(t, filepath.Join(root, "books", "new-root"))
+	mustMkdir(t, filepath.Join(root, ".plundrio-files"))
+	mustWrite(t, filepath.Join(root, "books", "old-root", "book.epub"), "book")
+	mustWrite(t, filepath.Join(root, "books", "new-root", "other.epub"), "other")
+	mustWrite(t, filepath.Join(root, download.CategoryStateFileName), `{"101":"books"}`)
+	mustWrite(t, filepath.Join(root, ".plundrio-files", "101.json"), `[{"name":"old-root/book.epub","length":4}]`)
+	client := &fakeClient{transfers: []*putio.Transfer{{ID: 101, Name: "new-root", SaveParentID: 1}}}
+	report, err := New(client, 1, root, false).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := objectLabels(report.Active); !reflect.DeepEqual(got, []string{"local:books/old-root"}) {
+		t.Fatalf("active = %v", got)
+	}
+	if got := objectLabels(report.Unmanaged); !reflect.DeepEqual(got, []string{"local:books/new-root"}) {
+		t.Fatalf("unmanaged = %v", got)
+	}
+}

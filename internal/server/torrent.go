@@ -457,10 +457,13 @@ func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (inte
 			Int("status", status).
 			Msg("Calculated progress")
 
+		manifest, _ := s.dlService.GetTransferFiles(t.ID)
+		// Arr builds its import path from downloadDir and name.
+		localName := download.TransferRoot(t.Name, manifest)
 		torrentInfo := map[string]interface{}{
 			"id":             t.ID,
 			"hashString":     t.Hash,
-			"name":           t.Name,
+			"name":           localName,
 			"eta":            eta,
 			"status":         status,
 			"downloadDir":    filepath.Join(s.cfg.TargetDir, s.localCategory(t.ID)),
@@ -487,7 +490,7 @@ func (s *Server) handleTorrentGet(_ context.Context, args json.RawMessage) (inte
 		}
 
 		if slices.Contains(params.Fields, "files") {
-			files, err := s.localTorrentFiles(t, percentDone >= 1)
+			files, err := s.localTorrentFiles(t, manifest, percentDone >= 1)
 			if err != nil {
 				return nil, fmt.Errorf("list local files for transfer %d: %w", t.ID, err)
 			}
@@ -549,13 +552,12 @@ type transmissionFile struct {
 
 // localTorrentFiles returns the transfer-ID-keyed manifest. Names are relative
 // to downloadDir, matching Transmission's files contract.
-func (s *Server) localTorrentFiles(transfer *putio.Transfer, complete bool) ([]transmissionFile, error) {
-	transferName := filepath.Clean(transfer.Name)
+func (s *Server) localTorrentFiles(transfer *putio.Transfer, manifest []download.TransferFile, complete bool) ([]transmissionFile, error) {
+	transferName := filepath.Clean(download.TransferRoot(transfer.Name, manifest))
 	if transferName == "." || !filepath.IsLocal(transferName) {
 		return nil, fmt.Errorf("unsafe transfer path %q", transfer.Name)
 	}
-	manifest, ok := s.dlService.GetTransferFiles(transfer.ID)
-	if !ok {
+	if len(manifest) == 0 {
 		// Put.io may be complete before the local processor has built its
 		// authoritative manifest. Keep the torrent in the RPC response without
 		// claiming ownership of any files yet.
@@ -569,7 +571,7 @@ func (s *Server) localTorrentFiles(transfer *putio.Transfer, complete bool) ([]t
 		name := filepath.Clean(filepath.FromSlash(file.Name))
 		rel, err := filepath.Rel(transferName, name)
 		if err != nil || rel == "." || !filepath.IsLocal(rel) {
-			return nil, fmt.Errorf("manifest file %q is outside transfer %q", file.Name, transfer.Name)
+			return nil, fmt.Errorf("manifest file %q is outside transfer %q", file.Name, transferName)
 		}
 		var bytesCompleted int64
 		// Whole-transfer granularity: per-file progress is not persisted.
@@ -712,7 +714,8 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 
 		if params.DeleteLocalData {
 			localTargetDir := filepath.Join(s.cfg.TargetDir, category)
-			if err := deleteLocalData(localTargetDir, transfer.Name); err != nil {
+			manifest, _ := s.dlService.GetTransferFiles(transfer.ID)
+			if err := deleteLocalData(localTargetDir, download.TransferRoot(transfer.Name, manifest)); err != nil {
 				log.Error("rpc").
 					Str("operation", "torrent-remove").
 					Str("transfer_name", transfer.Name).

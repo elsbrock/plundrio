@@ -229,6 +229,7 @@ func TestProcessTransferRestoresCleanedTransferFromManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	transfer.Name = "renamed remotely"
 	p.processTransfer(transfer)
 
 	if client.getAllTransferFilesCalls != 0 {
@@ -353,5 +354,49 @@ func TestLocalCategory_GatedByTargetFlag(t *testing.T) {
 				t.Errorf("localCategory(42) = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProcessTransferRefreshesFilesUnderSavedRoot(t *testing.T) {
+	client := &fakePutioClient{allTransferFiles: []*putio.File{
+		{ID: 11, Name: "kept.epub", Size: 4},
+		{ID: 12, Name: "added.epub", Size: 3},
+	}}
+	p := newTestProcessor(t, 100, false, client)
+	p.manager.SetCategory(101, "books")
+	p.manager.cfg.UseCategoriesTarget = true
+	if err := p.manager.transferFiles.Set(101, []TransferFile{
+		{Name: "old-root/kept.epub", Length: 4},
+		{Name: "old-root/removed.epub", Length: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(p.targetDir, "books", "old-root", "kept.epub")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("book"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transfer := &putio.Transfer{ID: 101, Name: "new-root", FileID: 500}
+	p.processTransfer(transfer)
+	got, _ := p.manager.transferFiles.Get(101)
+	want := []TransferFile{{Name: "old-root/kept.epub", Length: 4}, {Name: "old-root/added.epub", Length: 3}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("refreshed manifest = %+v, want %+v", got, want)
+	}
+	select {
+	case job := <-p.manager.jobs:
+		if job.FileID != 12 || job.Name != filepath.Join("books", "old-root", "added.epub") {
+			t.Fatalf("queued job = %+v", job)
+		}
+	default:
+		t.Fatal("new remote file was not queued")
+	}
+	if len(p.manager.jobs) != 0 {
+		t.Fatal("existing file was queued again")
+	}
+	if transfer.Name != "new-root" {
+		t.Fatal("remote transfer was mutated")
 	}
 }

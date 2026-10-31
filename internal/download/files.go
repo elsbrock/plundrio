@@ -26,6 +26,20 @@ type TransferFile struct {
 	Length int64  `json:"length"`
 }
 
+// TransferRoot returns the saved download root, falling back to the remote name
+// before a manifest exists. Files are flattened beneath one transfer directory.
+func TransferRoot(name string, files []TransferFile) string {
+	if len(files) > 0 {
+		return filepath.Dir(filepath.FromSlash(files[0].Name))
+	}
+	return name
+}
+
+// LoadTransferFiles reads the existing transfer-ID-keyed manifest.
+func LoadTransferFiles(targetDir string, transferID int64) ([]TransferFile, error) {
+	return newTransferFileStore(targetDir).load(transferID)
+}
+
 // TransferFileStore preserves one authoritative manifest per transfer after
 // Plundrio deletes the source file from Put.io.
 type TransferFileStore struct {
