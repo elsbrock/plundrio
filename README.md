@@ -559,7 +559,11 @@ downloads. Failed reviewed retirement remains a warning, not a download error.
 root. Preserve it across restarts and exclude it from media scans, filesystem
 reconciliation, and unmanaged-file deletion. Transmission `files` names are
 relative to `downloadDir`; `bytesCompleted` currently reports whole-transfer
-completion (zero until complete, then each file's full length).
+completion (zero until complete, then each file's full length). Once a
+manifest exists, its saved directory is reported as `name` and used for local
+paths, so renaming a transfer on Put.io does not move or orphan the local copy.
+An unreadable manifest marks only that torrent as stopped with a local error;
+other torrents are still listed.
 
 `torrent-remove` persists a removal marker before deleting remote data. Remote
 transfer deletion gets at most three attempts per request. If it still fails,
