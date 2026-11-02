@@ -1,7 +1,9 @@
 package download
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -45,5 +47,73 @@ func TestTransferFileStoreRejectsEmptyManifest(t *testing.T) {
 	}
 	if _, err := os.Stat(store.path(101)); !os.IsNotExist(err) {
 		t.Fatalf("empty manifest created state file: %v", err)
+	}
+}
+
+func TestTransferFileStoreRewritePreservesOpenReaders(t *testing.T) {
+	store := newTransferFileStore(t.TempDir())
+	before := []TransferFile{{Name: "saved-root/old.epub", Length: 42}}
+	after := []TransferFile{{Name: "saved-root/new.epub", Length: 7}}
+	if err := store.Set(101, before); err != nil {
+		t.Fatal(err)
+	}
+	// Pause a reader after opening the manifest, before consuming its bytes.
+	reader, err := os.Open(store.path(101))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	if err := store.Set(101, after); err != nil {
+		t.Fatal(err)
+	}
+	var got []TransferFile
+	if err := json.NewDecoder(reader).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, before) {
+		t.Fatalf("open reader saw rewritten manifest: %+v, want %+v", got, before)
+	}
+	got, err = store.load(101)
+	if err != nil || !reflect.DeepEqual(got, after) {
+		t.Fatalf("new reader = %+v, %v, want %+v", got, err, after)
+	}
+	info, err := os.Stat(store.path(101))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("manifest permissions = %o, want 600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(store.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "101.json" {
+		t.Fatalf("unexpected state files: %v", entries)
+	}
+}
+
+func TestTransferFileStoreFailedPublishRemovesTemporaryFile(t *testing.T) {
+	store := newTransferFileStore(t.TempDir())
+	// A nonempty directory prevents replacement of the destination.
+	if err := os.MkdirAll(store.path(101), 0700); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(store.path(101), "keep")
+	if err := os.WriteFile(kept, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(101, []TransferFile{{Name: "saved-root/file.epub", Length: 7}}); err == nil {
+		t.Fatal("expected publish failure")
+	}
+	if data, err := os.ReadFile(kept); err != nil || string(data) != "unchanged" {
+		t.Fatalf("failed publish changed existing state: %q, %v", data, err)
+	}
+	entries, err := os.ReadDir(store.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "101.json" {
+		t.Fatalf("failed publish left temporary files: %v", entries)
 	}
 }

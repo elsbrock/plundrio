@@ -484,3 +484,63 @@ func unmanagedObjectID(t *testing.T, service *Service, source, objectPath string
 	t.Fatalf("unmanaged object %s:%s not found in report", source, objectPath)
 	return ""
 }
+
+func TestReconcileUsesSavedRootAfterRename(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "books", "old-root"))
+	mustMkdir(t, filepath.Join(root, "books", "new-root"))
+	mustMkdir(t, filepath.Join(root, ".plundrio-files"))
+	mustWrite(t, filepath.Join(root, "books", "old-root", "book.epub"), "book")
+	mustWrite(t, filepath.Join(root, "books", "new-root", "other.epub"), "other")
+	mustWrite(t, filepath.Join(root, download.CategoryStateFileName), `{"101":"books"}`)
+	mustWrite(t, filepath.Join(root, ".plundrio-files", "101.json"), `[{"name":"old-root/book.epub","length":4}]`)
+	client := &fakeClient{transfers: []*putio.Transfer{{ID: 101, Name: "new-root", SaveParentID: 1}}}
+	report, err := New(client, 1, root, false).Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := objectLabels(report.Active); !reflect.DeepEqual(got, []string{"local:books/old-root"}) {
+		t.Fatalf("active = %v", got)
+	}
+	if got := objectLabels(report.Unmanaged); !reflect.DeepEqual(got, []string{"local:books/new-root"}) {
+		t.Fatalf("unmanaged = %v", got)
+	}
+}
+
+func TestReconcileManifestLoadErrorPreventsDeletion(t *testing.T) {
+	for _, state := range []string{"corrupt", "empty", "unreadable"} {
+		t.Run(state, func(t *testing.T) {
+			root := t.TempDir()
+			payload := filepath.Join(root, "old-root", "book.epub")
+			mustMkdir(t, filepath.Dir(payload))
+			mustWrite(t, payload, "book")
+			client := &fakeClient{}
+			service := New(client, 1, root, false)
+			id := unmanagedObjectID(t, service, "local", "old-root")
+			client.transfers = []*putio.Transfer{{ID: 101, Name: "new-root", SaveParentID: 1}}
+			manifest := filepath.Join(root, ".plundrio-files", "101.json")
+			mustMkdir(t, filepath.Dir(manifest))
+			switch state {
+			case "corrupt":
+				mustWrite(t, manifest, "{")
+			case "empty":
+				mustWrite(t, manifest, "[]")
+			case "unreadable":
+				mustMkdir(t, manifest)
+			}
+			if _, err := service.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "transfer 101") {
+				t.Errorf("manifest load error did not stop reconciliation: %v", err)
+			}
+			report, err := service.Delete(context.Background(), DeleteOptions{IDs: []string{id}, Local: true, Apply: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Results) != 1 || report.Results[0].Status != "failed" || report.Results[0].Reason != "revalidation_failed" {
+				t.Errorf("manifest load error allowed deletion: %+v", report)
+			}
+			if data, err := os.ReadFile(payload); err != nil || string(data) != "book" {
+				t.Fatalf("saved-root payload changed: %q, %v", data, err)
+			}
+		})
+	}
+}

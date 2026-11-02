@@ -38,7 +38,7 @@ func TestRemovalReleasesMemoryAndSuppressesRestart(t *testing.T) {
 	if m.GetCategory(101) != "books" {
 		t.Fatal("authoritative category lost")
 	}
-	if _, ok := m.GetTransferFiles(101); !ok {
+	if _, ok := m.transferFiles.Get(101); !ok {
 		t.Fatal("manifest lost")
 	}
 
@@ -91,7 +91,7 @@ func TestRemovalPrunesOnlyAfterSuccessfulFullListing(t *testing.T) {
 	if m.RemovalPending(101) {
 		t.Fatal("confirmed remote absence retained marker")
 	}
-	if _, ok := m.GetTransferFiles(101); ok {
+	if _, ok := m.transferFiles.Get(101); ok {
 		t.Fatal("confirmed remote absence retained manifest")
 	}
 }

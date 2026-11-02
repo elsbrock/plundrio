@@ -26,6 +26,20 @@ type TransferFile struct {
 	Length int64  `json:"length"`
 }
 
+// TransferRoot returns the saved download root, falling back to the remote name
+// before a manifest exists. Files are flattened beneath one transfer directory.
+func TransferRoot(name string, files []TransferFile) string {
+	if len(files) > 0 {
+		return filepath.Dir(filepath.FromSlash(files[0].Name))
+	}
+	return name
+}
+
+// LoadTransferFiles reads the existing transfer-ID-keyed manifest.
+func LoadTransferFiles(targetDir string, transferID int64) ([]TransferFile, error) {
+	return newTransferFileStore(targetDir).load(transferID)
+}
+
 // TransferFileStore preserves one authoritative manifest per transfer after
 // Plundrio deletes the source file from Put.io.
 type TransferFileStore struct {
@@ -40,8 +54,9 @@ func (fs *TransferFileStore) path(transferID int64) string {
 	return filepath.Join(fs.stateDir, strconv.FormatInt(transferID, 10)+".json")
 }
 
-// Set stores a transfer's complete expected file list. If interrupted, Put.io
-// still owns the source and the next poll rewrites the manifest before cleanup.
+// Set atomically replaces a transfer's complete expected file list, so readers
+// see either the previous manifest or the new one. If interrupted, Put.io still
+// owns the source and the next poll rewrites the manifest before cleanup.
 func (fs *TransferFileStore) Set(transferID int64, files []TransferFile) error {
 	if transferID <= 0 || len(files) == 0 {
 		return fmt.Errorf("transfer file manifest requires a transfer ID and at least one file")
@@ -53,10 +68,31 @@ func (fs *TransferFileStore) Set(transferID int64, files []TransferFile) error {
 	if err != nil {
 		return fmt.Errorf("marshal transfer file state: %w", err)
 	}
-	if err := os.WriteFile(fs.path(transferID), data, 0600); err != nil {
+	file, err := os.CreateTemp(fs.stateDir, ".files-*")
+	if err != nil {
+		return fmt.Errorf("create temporary transfer file state: %w", err)
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(data); err != nil {
+		file.Close()
 		return fmt.Errorf("write transfer file state: %w", err)
 	}
-	return nil
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync transfer file state: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close transfer file state: %w", err)
+	}
+	if err := os.Rename(file.Name(), fs.path(transferID)); err != nil {
+		return fmt.Errorf("publish transfer file state: %w", err)
+	}
+	dir, err := os.Open(fs.stateDir)
+	if err != nil {
+		return fmt.Errorf("open transfer file state directory: %w", err)
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (fs *TransferFileStore) Get(transferID int64) ([]TransferFile, bool) {

@@ -384,9 +384,14 @@ func activeLocalPaths(root string, transfers []*putio.Transfer, nodes []*localNo
 	}
 	for _, transfer := range transfers {
 		category := categories[transfer.ID]
-		paths := []string{transfer.Name}
+		files, err := download.LoadTransferFiles(root, transfer.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load manifest for transfer %d: %w", transfer.ID, err)
+		}
+		name := download.TransferRoot(transfer.Name, files)
+		paths := []string{name}
 		if category != "" {
-			paths = append(paths, filepath.Join(category, transfer.Name))
+			paths = append(paths, filepath.Join(category, name))
 		}
 		for _, rel := range paths {
 			clean, err := confinedRelativePath(root, rel)

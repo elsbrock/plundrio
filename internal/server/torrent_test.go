@@ -92,9 +92,8 @@ func (s *torrentAddDownloadService) GetTransferContext(transferID int64) (*downl
 	return ctx, ok
 }
 
-func (s *torrentAddDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, bool) {
-	files, ok := s.files[transferID]
-	return files, ok
+func (s *torrentAddDownloadService) GetTransferFiles(transferID int64) ([]download.TransferFile, error) {
+	return s.files[transferID], nil
 }
 
 func (s *torrentAddDownloadService) SetCategory(transferID int64, category string) {
