@@ -564,7 +564,7 @@ type transmissionFile struct {
 func (s *Server) localTorrentFiles(transfer *putio.Transfer, manifest []download.TransferFile, complete bool) ([]transmissionFile, error) {
 	transferName := filepath.Clean(download.TransferRoot(transfer.Name, manifest))
 	if transferName == "." || !filepath.IsLocal(transferName) {
-		return nil, fmt.Errorf("unsafe transfer path %q", transfer.Name)
+		return nil, fmt.Errorf("unsafe transfer path %q", transferName)
 	}
 	if len(manifest) == 0 {
 		// Put.io may be complete before the local processor has built its
@@ -631,7 +631,11 @@ func (s *Server) handleTorrentRemove(ctx context.Context, args json.RawMessage) 
 		}
 
 		// Remote deletion can let the monitor prune the manifest before local cleanup.
-		manifest, _ := s.dlService.GetTransferFiles(transfer.ID)
+		manifest, err := s.dlService.GetTransferFiles(transfer.ID)
+		if err != nil {
+			log.Warn("rpc").Str("operation", "torrent-remove").Int64("transfer_id", transfer.ID).Err(err).
+				Msg("Failed to load manifest; falling back to remote transfer name")
+		}
 		localName := download.TransferRoot(transfer.Name, manifest)
 
 		// With keep-seeding the source file is still on Put.io. If the local

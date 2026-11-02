@@ -445,7 +445,11 @@ func (p *TransferProcessor) startTransferProcessing(transfer *putio.Transfer) {
 // processTransfer handles downloading of a completed or seeding transfer
 func (p *TransferProcessor) processTransfer(transfer *putio.Transfer) {
 	// Keep the local destination stable while refreshing the remote file list.
-	savedFiles, _ := p.manager.GetTransferFiles(transfer.ID)
+	savedFiles, err := p.manager.GetTransferFiles(transfer.ID)
+	if err != nil {
+		log.Warn("transfers").Int64("transfer_id", transfer.ID).Err(err).
+			Msg("Failed to load manifest; falling back to remote transfer name")
+	}
 	localTransfer := *transfer
 	localTransfer.Name = TransferRoot(transfer.Name, savedFiles)
 	transfer = &localTransfer
