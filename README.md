@@ -386,6 +386,8 @@ Pending-removal manifests also protect their local transfer directories even
 when the remote record moved outside managed folders or disappeared while a
 worker drains. If a pending removal has missing or malformed ownership evidence,
 reconciliation fails closed; resolve that removal before selecting cleanup IDs.
+An unreadable manifest for a current transfer also fails reconciliation, since
+its saved local directory cannot be protected.
 An unmanaged object has no matching current transfer; that alone does not prove
 it was imported or is disposable. Review the report and verify retained copies
 before selecting IDs.
