@@ -117,3 +117,18 @@ func TestTransferFileStoreFailedPublishRemovesTemporaryFile(t *testing.T) {
 		t.Fatalf("failed publish left temporary files: %v", entries)
 	}
 }
+
+func TestTransferRootUsesFirstPathElement(t *testing.T) {
+	for _, tc := range []struct {
+		files []TransferFile
+		want  string
+	}{
+		{nil, "remote"},
+		{[]TransferFile{{Name: "Book/book.m4b"}}, "Book"},
+		{[]TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}, {Name: "Show/ep1.mkv"}}, "Show"},
+	} {
+		if got := TransferRoot("remote", tc.files); got != tc.want {
+			t.Errorf("TransferRoot(%+v) = %q, want %q", tc.files, got, tc.want)
+		}
+	}
+}

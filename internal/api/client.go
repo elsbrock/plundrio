@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 
 	"github.com/elsbrock/go-putio"
 	"golang.org/x/oauth2"
@@ -203,29 +204,34 @@ func (c *Client) GetAllTransferFiles(ctx context.Context, fileID int64) ([]*puti
 		return []*putio.File{&file}, nil
 	}
 
-	// Otherwise, recursively get all files in the directory
+	// Otherwise, recursively get all files in the directory. Names are rewritten
+	// to slash-separated paths relative to the transfer folder, so files with
+	// the same name in different subfolders (e.g. Subs/<episode>/2_eng.srt)
+	// keep distinct local paths.
 	var allFiles []*putio.File
-	var getFiles func(id int64) error
+	var getFiles func(id int64, dir string) error
 
-	getFiles = func(id int64) error {
+	getFiles = func(id int64, dir string) error {
 		files, err := c.GetFiles(ctx, id)
 		if err != nil {
 			return err
 		}
 
 		for _, file := range files {
+			name := path.Join(dir, file.Name)
 			if file.IsDir() {
-				if err := getFiles(file.ID); err != nil {
+				if err := getFiles(file.ID, name); err != nil {
 					return err
 				}
 			} else {
+				file.Name = name
 				allFiles = append(allFiles, file)
 			}
 		}
 		return nil
 	}
 
-	if err := getFiles(fileID); err != nil {
+	if err := getFiles(fileID, ""); err != nil {
 		return nil, err
 	}
 

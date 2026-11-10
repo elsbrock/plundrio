@@ -83,6 +83,26 @@ func TestProcessTransferPersistsExactFileManifest(t *testing.T) {
 	}
 }
 
+func TestBuildTransferFileManifestKeepsNestedFilesDistinct(t *testing.T) {
+	transfer := &putio.Transfer{ID: 101, Name: "Show.S01"}
+	got, err := buildTransferFileManifest(transfer, []*putio.File{
+		{Name: "ep1.mkv", Size: 3},
+		{Name: "Subs/ep1/2_eng.srt", Size: 1},
+		{Name: "Subs/ep2/2_eng.srt", Size: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []TransferFile{
+		{Name: "Show.S01/ep1.mkv", Length: 3},
+		{Name: "Show.S01/Subs/ep1/2_eng.srt", Length: 1},
+		{Name: "Show.S01/Subs/ep2/2_eng.srt", Length: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("manifest = %+v, want %+v", got, want)
+	}
+}
+
 func TestBuildTransferFileManifestRejectsUnsafeOrCollidingPaths(t *testing.T) {
 	transfer := &putio.Transfer{ID: 101, Name: "Book"}
 	if _, err := buildTransferFileManifest(transfer, []*putio.File{{Name: "../escape.m4b", Size: 1}}); err == nil {

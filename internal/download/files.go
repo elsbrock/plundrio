@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,10 +28,12 @@ type TransferFile struct {
 }
 
 // TransferRoot returns the saved download root, falling back to the remote name
-// before a manifest exists. Files are flattened beneath one transfer directory.
+// before a manifest exists. Manifest names start with the transfer directory and
+// may continue through subfolders, so the root is the first path element.
 func TransferRoot(name string, files []TransferFile) string {
 	if len(files) > 0 {
-		return filepath.Dir(filepath.FromSlash(files[0].Name))
+		root, _, _ := strings.Cut(path.Clean(filepath.ToSlash(files[0].Name)), "/")
+		return filepath.FromSlash(root)
 	}
 	return name
 }
