@@ -174,6 +174,8 @@
           modules = ./gomod2nix.toml;
           pwd = ./.;
           subPackages = [ "cmd/${pname}" ];
+          # nixpkgs pins Go; never fetch go.mod's toolchain
+          GOTOOLCHAIN = "local";
 
           # Modified ldflags to work with pure Go builds
           ldflags = [
