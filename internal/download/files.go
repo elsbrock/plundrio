@@ -31,11 +31,17 @@ type TransferFile struct {
 // before a manifest exists. Manifest names start with the transfer directory and
 // may continue through subfolders, so the root is the first path element.
 func TransferRoot(name string, files []TransferFile) string {
-	if len(files) > 0 {
-		root, _, _ := strings.Cut(path.Clean(filepath.ToSlash(files[0].Name)), "/")
-		return filepath.FromSlash(root)
+	if len(files) == 0 {
+		return name
 	}
-	return name
+	first := path.Clean(filepath.ToSlash(files[0].Name))
+	// Flat manifests saved before nested paths were kept can have a
+	// multi-element root; an unrenamed remote name still identifies it.
+	if remote := path.Clean(filepath.ToSlash(name)); strings.HasPrefix(first, remote+"/") {
+		return filepath.FromSlash(remote)
+	}
+	root, _, _ := strings.Cut(first, "/")
+	return filepath.FromSlash(root)
 }
 
 // LoadTransferFiles reads the existing transfer-ID-keyed manifest.

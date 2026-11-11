@@ -152,4 +152,3 @@ pace their writes so the progress ticker genuinely fires, and
 
 - `GetTransfers()` filters transfers by managed folder. With `UseCategoriesPutio` off it accepts only `SaveParentID == folderID`, so externally-added transfers in other folders are invisible (#17). With `UseCategoriesPutio` on it also accepts the folder's direct subfolders (single level only).
 - The RPC server has no authentication and reports a static session ID; it assumes a trusted network
-- Files from nested put.io folders are flattened into `TargetDir/<category>/<transfer>/`, so identically named files in different subfolders collide

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -586,6 +587,11 @@ func buildTransferFileManifest(transfer *putio.Transfer, files []*putio.File) ([
 	transferName := filepath.Clean(transfer.Name)
 	if !validRelativeTransferPath(transferName) || IsReservedTransferName(transferName) {
 		return nil, fmt.Errorf("unsafe transfer name %q", transfer.Name)
+	}
+	// TransferRoot reads the root back as the first path element, and
+	// torrent-remove deletes that directory, so the root must be one element.
+	if strings.ContainsRune(transferName, filepath.Separator) {
+		return nil, fmt.Errorf("transfer name %q contains a path separator", transfer.Name)
 	}
 
 	manifest := make([]TransferFile, 0, len(files))

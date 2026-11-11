@@ -120,15 +120,20 @@ func TestTransferFileStoreFailedPublishRemovesTemporaryFile(t *testing.T) {
 
 func TestTransferRootUsesFirstPathElement(t *testing.T) {
 	for _, tc := range []struct {
-		files []TransferFile
-		want  string
+		remote string
+		files  []TransferFile
+		want   string
 	}{
-		{nil, "remote"},
-		{[]TransferFile{{Name: "Book/book.m4b"}}, "Book"},
-		{[]TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}, {Name: "Show/ep1.mkv"}}, "Show"},
+		{"remote", nil, "remote"},
+		{"remote", []TransferFile{{Name: "Book/book.m4b"}}, "Book"},
+		{"remote", []TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}, {Name: "Show/ep1.mkv"}}, "Show"},
+		{"Show", []TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}}, "Show"},
+		// Flat manifests saved before nested paths were kept may have a
+		// multi-element root; the unrenamed remote name still identifies it.
+		{"tv/Show", []TransferFile{{Name: "tv/Show/ep1.mkv"}}, "tv/Show"},
 	} {
-		if got := TransferRoot("remote", tc.files); got != tc.want {
-			t.Errorf("TransferRoot(%+v) = %q, want %q", tc.files, got, tc.want)
+		if got := TransferRoot(tc.remote, tc.files); got != filepath.FromSlash(tc.want) {
+			t.Errorf("TransferRoot(%q, %+v) = %q, want %q", tc.remote, tc.files, got, tc.want)
 		}
 	}
 }

@@ -118,6 +118,12 @@ func TestBuildTransferFileManifestRejectsUnsafeOrCollidingPaths(t *testing.T) {
 	if _, err := buildTransferFileManifest(transfer, []*putio.File{{Name: "101.json", Size: 1}}); err == nil {
 		t.Fatal("expected reserved manifest directory name to fail")
 	}
+	// TransferRoot takes the first path element, so a multi-element name
+	// would make torrent-remove delete its parent directory.
+	transfer.Name = "tv/Show"
+	if _, err := buildTransferFileManifest(transfer, []*putio.File{{Name: "ep1.mkv", Size: 1}}); err == nil {
+		t.Fatal("expected multi-element transfer name to fail")
+	}
 }
 
 func TestProcessTransferManifestFailureIsMarkedFailed(t *testing.T) {
