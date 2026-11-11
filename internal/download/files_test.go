@@ -117,3 +117,23 @@ func TestTransferFileStoreFailedPublishRemovesTemporaryFile(t *testing.T) {
 		t.Fatalf("failed publish left temporary files: %v", entries)
 	}
 }
+
+func TestTransferRootUsesFirstPathElement(t *testing.T) {
+	for _, tc := range []struct {
+		remote string
+		files  []TransferFile
+		want   string
+	}{
+		{"remote", nil, "remote"},
+		{"remote", []TransferFile{{Name: "Book/book.m4b"}}, "Book"},
+		{"remote", []TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}, {Name: "Show/ep1.mkv"}}, "Show"},
+		{"Show", []TransferFile{{Name: "Show/Subs/ep1/2_eng.srt"}}, "Show"},
+		// Flat manifests saved before nested paths were kept may have a
+		// multi-element root; the unrenamed remote name still identifies it.
+		{"tv/Show", []TransferFile{{Name: "tv/Show/ep1.mkv"}}, "tv/Show"},
+	} {
+		if got := TransferRoot(tc.remote, tc.files); got != filepath.FromSlash(tc.want) {
+			t.Errorf("TransferRoot(%q, %+v) = %q, want %q", tc.remote, tc.files, got, tc.want)
+		}
+	}
+}

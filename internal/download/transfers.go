@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -587,6 +588,11 @@ func buildTransferFileManifest(transfer *putio.Transfer, files []*putio.File) ([
 	if !validRelativeTransferPath(transferName) || IsReservedTransferName(transferName) {
 		return nil, fmt.Errorf("unsafe transfer name %q", transfer.Name)
 	}
+	// TransferRoot reads the root back as the first path element, and
+	// torrent-remove deletes that directory, so the root must be one element.
+	if strings.ContainsRune(transferName, filepath.Separator) {
+		return nil, fmt.Errorf("transfer name %q contains a path separator", transfer.Name)
+	}
 
 	manifest := make([]TransferFile, 0, len(files))
 	seen := make(map[string]struct{}, len(files))
@@ -756,7 +762,7 @@ func (p *TransferProcessor) queueTransferFiles(transfer *putio.Transfer, files [
 // shouldDownloadFile determines if a file needs to be downloaded
 func (p *TransferProcessor) shouldDownloadFile(transfer *putio.Transfer, file *putio.File) bool {
 	category := p.manager.localCategory(transfer.ID)
-	targetPath := filepath.Join(p.targetDir, category, transfer.Name, file.Name)
+	targetPath := filepath.Join(p.targetDir, category, transfer.Name, filepath.FromSlash(file.Name))
 	info, err := os.Stat(targetPath)
 
 	// Skip if file exists with correct size
@@ -785,7 +791,7 @@ func (p *TransferProcessor) queueFileDownload(transfer *putio.Transfer, file *pu
 	category := p.manager.localCategory(transfer.ID)
 	p.manager.queueDownload(downloadJob{
 		FileID:     file.ID,
-		Name:       filepath.Join(category, transfer.Name, file.Name),
+		Name:       filepath.Join(category, transfer.Name, filepath.FromSlash(file.Name)),
 		TransferID: transfer.ID,
 	}, ctx)
 	log.Debug("transfers").
